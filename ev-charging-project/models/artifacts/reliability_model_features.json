@@ -1,0 +1,13 @@
+[
+  "avg_session_duration_minutes",
+  "num_faults",
+  "num_resolved_faults",
+  "resolved_fault_ratio",
+  "days_since_last_fault",
+  "has_no_faults",
+  "avg_rating",
+  "avg_sentiment_score",
+  "review_count",
+  "num_reviews_low",
+  "num_reviews_high"
+]

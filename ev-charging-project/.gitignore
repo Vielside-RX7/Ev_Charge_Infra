@@ -1,0 +1,116 @@
+# =============================================================================
+# EV Charging Intelligence Platform - .gitignore
+# =============================================================================
+
+# ── Secrets & Environment Configuration (CRITICAL) ───────────────────────────
+# .env contains database passwords and Open Charge Map (OCM) API keys.
+# NEVER commit .env files to source control.
+.env
+.env.*
+*.env
+dashboard/.env
+!.env.example
+
+# ── Python & Bytecode ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.manifest
+*.spec
+
+# ── Virtual Environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Python Packaging & Builds ────────────────────────────────────────────────
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ── Testing, Quality & Coverage ──────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# ── Jupyter Notebooks ────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Frontend (Dashboard - Vite & React) ──────────────────────────────────────
+node_modules/
+dashboard/node_modules/
+dist/
+dashboard/dist/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Database & Dump Files ────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+
+# ── Machine Learning Artifacts & Raw Datasets ────────────────────────────────
+# Generic model dumps and large training checkpoints
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Note: Production model weights (models/artifacts/reliability_model.pkl, 
+# occupancy_model.pkl) are lightweight (~150KB) and required for instant API startup.
+# To ignore all local pkl files, uncomment the line below:
+# models/artifacts/*.pkl
+
+# ── Temporary & Scratch Files ────────────────────────────────────────────────
+scratch/
+*.tmp
+*.temp
+*.log
+
+# ── IDEs & Code Editors ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ── Operating System Artifacts ───────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+desktop.ini

@@ -1,0 +1,8 @@
+[
+  "charger_id",
+  "day_of_week",
+  "day_time_block",
+  "is_weekend",
+  "num_ports",
+  "charging_power_kw"
+]
