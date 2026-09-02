@@ -44,6 +44,47 @@ from occupancy_model import predict_occupancy  # noqa: E402
 from reliability_model import predict_reliability  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# Energy Consumption & Safety Buffer Constants
+# ---------------------------------------------------------------------------
+DEFAULT_ENERGY_CONSUMPTION_KWH_PER_KM: float = 0.15  # 150 Wh/km (typical Indian EV fleet average)
+DEFAULT_RESERVE_BATTERY_PERCENT: float = 5.0        # 5.0% buffer reserved to prevent cell damage & stranding
+
+
+class VehicleStrandedException(Exception):
+    """
+    Raised when the vehicle's remaining state-of-charge (usable range) is
+    insufficient to reach any candidate charging station within search radius.
+    """
+
+    def __init__(self, usable_range_km: float, current_soc_percent: float, min_distance_km: float = 0.0):
+        self.usable_range_km = usable_range_km
+        self.current_soc_percent = current_soc_percent
+        self.min_distance_km = min_distance_km
+        super().__init__(
+            f"No reachable chargers: your estimated usable range ({usable_range_km:.1f} km at {current_soc_percent:.1f}% SoC) "
+            f"cannot reach any station in range (closest station requires {min_distance_km:.1f} km). "
+            f"Please consider emergency charging options or reducing target distance."
+        )
+
+
+def compute_usable_range_km(
+    current_soc_percent: float,
+    battery_capacity_kwh: float,
+    energy_consumption_kwh_per_km: float = DEFAULT_ENERGY_CONSUMPTION_KWH_PER_KM,
+    reserve_battery_percent: float = DEFAULT_RESERVE_BATTERY_PERCENT,
+) -> float:
+    """
+    Compute estimated physical driving range (in km) remaining in battery,
+    minus an unusable safety buffer reserve.
+    """
+    usable_soc_percent = max(0.0, current_soc_percent - reserve_battery_percent)
+    usable_energy_kwh = (usable_soc_percent / 100.0) * battery_capacity_kwh
+    if energy_consumption_kwh_per_km <= 0.0:
+        return 0.0
+    return usable_energy_kwh / energy_consumption_kwh_per_km
+
+
+# ---------------------------------------------------------------------------
 # In-Memory Cache
 # ---------------------------------------------------------------------------
 _CACHED_CHARGERS_DF: Optional[pd.DataFrame] = None
@@ -190,10 +231,16 @@ def get_road_route(
     # Estimate travel time assuming ~30 km/h average Indian urban driving speed
     fallback_travel_min = round((fallback_dist_km / 30.0) * 60.0, 1)
 
+    fallback_geometry = (
+        {"type": "LineString", "coordinates": [[user_lon, user_lat], [charger_lon, charger_lat]]}
+        if include_geometry
+        else None
+    )
+
     return {
         "distance_km": fallback_dist_km,
         "travel_time_minutes": fallback_travel_min,
-        "geometry": None,
+        "geometry": fallback_geometry,
         "is_fallback": True,
     }
 
@@ -309,12 +356,14 @@ def score_and_rank_chargers(
     max_search_radius_km: float = 25.0,
     top_n: int = 5,
     weights: Optional[Dict[str, float]] = None,
+    energy_consumption_kwh_per_km: float = DEFAULT_ENERGY_CONSUMPTION_KWH_PER_KM,
+    reserve_battery_percent: float = DEFAULT_RESERVE_BATTERY_PERCENT,
     debug_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Rank candidate EV charging stations within search radius based on a multi-criteria
-    optimization function combining predicted reliability, temporal availability,
-    distance, charging speed, and session cost.
+    Score and rank charging stations within radius that are physically reachable
+    given remaining battery charge, optimizing across reliability, availability,
+    road distance, duration, and session cost.
 
     Parameters
     ----------
@@ -339,6 +388,10 @@ def score_and_rank_chargers(
     weights : dict, optional
         Custom weights dictionary with keys:
         'reliability', 'availability', 'distance', 'cost', 'charging_time'.
+    energy_consumption_kwh_per_km : float, default 0.15
+        Average EV energy consumption in kWh/km (150 Wh/km).
+    reserve_battery_percent : float, default 5.0
+        Safety reserve buffer percentage subtracted from current SoC.
     debug_mode : bool, default False
         When True, returns all candidates within radius with normalized components.
 
@@ -346,6 +399,11 @@ def score_and_rank_chargers(
     -------
     list of dict
         Top ranked chargers sorted by final_score descending (or all if debug_mode=True).
+
+    Raises
+    ------
+    VehicleStrandedException
+        If the remaining battery charge cannot reach any charging station in range.
     """
     if arrival_datetime is None:
         arrival_datetime = datetime.now()
@@ -367,6 +425,14 @@ def score_and_rank_chargers(
 
     energy_needed_kwh = max(0.0, (target_soc_percent - current_soc_percent) / 100.0) * battery_capacity_kwh
 
+    # Physical Reachability Computation
+    usable_range_km = compute_usable_range_km(
+        current_soc_percent=current_soc_percent,
+        battery_capacity_kwh=battery_capacity_kwh,
+        energy_consumption_kwh_per_km=energy_consumption_kwh_per_km,
+        reserve_battery_percent=reserve_battery_percent,
+    )
+
     # 1. Filter by radius & evaluate connector compatibility
     candidates_raw: List[Dict[str, Any]] = []
 
@@ -380,8 +446,18 @@ def score_and_rank_chargers(
             is_compat = is_connector_compatible(connector_type, c_conn)
             candidates_raw.append({"row": row, "distance_km": dist_km, "is_compatible": is_compat})
 
+    # Geographic empty search radius
     if not candidates_raw:
         return []
+
+    # Fast Stranded Pre-Check: If usable range is zero or strictly less than the closest station in radius
+    min_cand_dist = min(c["distance_km"] for c in candidates_raw)
+    if usable_range_km <= 0.0 or min_cand_dist > usable_range_km:
+        raise VehicleStrandedException(
+            usable_range_km=usable_range_km,
+            current_soc_percent=current_soc_percent,
+            min_distance_km=round(min_cand_dist, 2),
+        )
 
     # 2. Connector Compatibility Filtering with Fallback
     compat_candidates = [c for c in candidates_raw if c["is_compatible"]]
@@ -473,12 +549,24 @@ def score_and_rank_chargers(
             "estimated_charging_time_minutes": round(chg_time_min, 1),
             "estimated_cost_inr": round(cost_inr, 2),
             "compatible": bool(item["is_compatible"]),
+            "usable_range_km": round(usable_range_km, 1),
         }
 
     # Execute concurrent OSRM & inference calls with max_workers=8
     max_workers = min(8, max(1, len(active_candidates)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         candidate_items = list(executor.map(_evaluate_candidate, active_candidates))
+
+    # Hard Reachability Filter on true road driving distance
+    reachable_candidates = [c for c in candidate_items if c["distance_km"] <= usable_range_km]
+    if not reachable_candidates:
+        min_road = min(c["distance_km"] for c in candidate_items) if candidate_items else 0.0
+        raise VehicleStrandedException(
+            usable_range_km=usable_range_km,
+            current_soc_percent=current_soc_percent,
+            min_distance_km=round(min_road, 2),
+        )
+    candidate_items = reachable_candidates
 
     # 6. Min-Max Normalization using Full-Pool Reference Bounds (Clamped to [0.0, 1.0])
     for c in candidate_items:

@@ -188,6 +188,18 @@ Where:
 - Strict filtering filters candidate stations matching the user's vehicle connector type (e.g. `CCS2`, `Type 2`).
 - If **zero** compatible stations are available within the user's search radius, the engine gracefully falls back to returning the best-ranked stations in radius while setting `"compatible": false` on each result.
 
+### Physical Reachability Hard Filter & Stranded Safeguard
+- **Safety Problem:** Recommending high-scoring stations that the vehicle cannot physically reach with its remaining state-of-charge poses a critical real-world stranding risk for EV drivers.
+- **Consumption Rate Assumption:** Uses a baseline fleet consumption rate of **`0.15 kWh/km` (150 Wh/km)**, representing the typical efficiency of popular Indian passenger EVs (Tata Nexon EV, Tiago EV, MG ZS EV) in mixed urban/highway driving conditions.
+- **Safety Reserve Buffer:** Reserves a **`5.0%` unusable battery capacity buffer** (the standard BMS "turtle mode" threshold) to prevent cell deep-discharge damage and buffer against traffic delays:
+  $$\text{Usable SoC} = \max(0.0, \text{SoC}_{\text{curr}} - 5.0\%)$$
+  $$\text{Usable Range (km)} = \frac{\text{Usable SoC} \times \text{Battery Capacity (kWh)}}{0.15\text{ kWh/km}}$$
+- **Hard Pre-Filter & Post-Route Pruning:** 
+  1. Fast straight-line pre-check: excludes stations where $D_{\text{haversine}} > \text{Usable Range}$.
+  2. Final confirmation: prunes any station whose actual OSRM driving road distance exceeds $\text{Usable Range}$.
+  3. Unlike distance weighting ($20\%$), reachability is a **hard binary feasibility gate**, guaranteeing that unreachable stations are never recommended.
+- **Dedicated Stranded Exception (`VehicleStrandedException`):** If the vehicle's remaining charge cannot safely reach *any* charging station within search radius, the API raises `HTTP 400 Bad Request` with error code `VEHICLE_STRANDED`, providing exact usable range, distance to the nearest station, and actionable emergency roadside charging guidance.
+
 ### Ranking Function
 `score_and_rank_chargers(...) -> list[dict]` in `models/recommendation_engine.py`.
 
@@ -263,8 +275,37 @@ Generates ranked EV charging recommendations for a given vehicle state, location
   ```
 - **Error Codes:**
   - `422 Unprocessable Entity`: Validation failures (e.g. invalid SoC, missing required fields).
+  - `400 Bad Request`: `VEHICLE_STRANDED` when usable charge cannot reach any candidate.
   - `404 Not Found`: No stations found within the specified search radius.
   - `500 Internal Server Error`: Unhandled model inference or system errors.
+
+#### 3. `POST /route`
+Fetches on-demand road driving route geometry (GeoJSON LineString), distance, and duration between origin and destination charger.
+- **Request Body (`RouteRequest`):**
+  ```json
+  {
+    "user_lat": 12.2958,
+    "user_lon": 76.6394,
+    "charger_id": 7
+  }
+  ```
+- **Response (`200 OK` — `RouteResponse`):**
+  ```json
+  {
+    "charger_id": 7,
+    "charger_name": "Grand Mercure Mysore",
+    "distance_km": 5.02,
+    "travel_time_minutes": 5.6,
+    "geometry": {
+      "type": "LineString",
+      "coordinates": [
+        [76.639391, 12.295732],
+        [76.639548, 12.295713]
+      ]
+    },
+    "is_fallback": false
+  }
+  ```
 
 ### Local Execution
 ```bash
@@ -274,7 +315,7 @@ Interactive OpenAPI documentation is automatically served at `http://localhost:8
 
 ## Dashboard (Frontend)
 
-Directory: `dashboard/`. Responsive single-page application built with React, Vite, and Tailwind CSS, interfacing with the FastAPI backend.
+Directory: `dashboard/`. Responsive single-page application built with React (`^18.3.1`), Leaflet (`^1.9.4`), `react-leaflet` (`^4.2.1`), Vite, and Tailwind CSS.
 
 ### Architecture & Components
 
@@ -284,28 +325,38 @@ Directory: `dashboard/`. Responsive single-page application built with React, Vi
    - Comprehensive client-side validation mirroring backend rules (`target_soc > current_soc`, SoC bounds `0–100%`, positive radius/capacity).
 
 2. **`dashboard/src/components/MapView.jsx`**:
-   - Leaflet interactive geospatial map powered by `react-leaflet`.
+   - Leaflet interactive geospatial map powered by `react-leaflet` (`^4.2.1`).
    - OpenStreetMap public tile server with required attribution (`&copy; OpenStreetMap contributors`).
-   - Custom `L.divIcon` markers:
-     - User Location Pin (pulsing indigo badge `📍`).
-     - Numbered Charger Badges (`#1` Gold, `#2+` Blue, and Incompatible/Fallback Amber with dashed border).
-     - Active selection ring with scale magnification.
-   - Interactive popups displaying rank, name, power, distance, score, and connector compatibility notes.
+   - Custom `L.divIcon` markers for user location and numbered chargers.
+   - Interactive popups with station metadata and quick "Navigate" trigger.
    - Auto-fit bounds via `map.fitBounds()` on search results update.
 
 3. **`dashboard/src/components/ResultsList.jsx`**:
    - Renders ranked station recommendation cards.
    - Station metadata: rank badge, power rating (kW), distance (km), reliability percentage, availability percentage, estimated duration (min), estimated tariff (₹), and compatibility flags.
-   - Loading skeletons and categorized error states (`404 Not Found`, `422 Validation Error`, `Network Unreachable`).
-   - Bidirectional integration: Highlights active card and auto-scrolls into view when a map marker is clicked.
+   - "🚗 Start Navigation" button initiating full-screen navigation mode.
+   - Loading skeletons and categorized error states (`400 Stranded`, `404 Not Found`, `422 Validation Error`, `Network Unreachable`).
 
-4. **`dashboard/src/App.jsx`**:
-   - Coordinates state management between form inputs, Axios API communication (`POST /recommend`), and lifted selection state (`selectedChargerId`).
-   - Bidirectional highlighting between MapView and ResultsList.
+4. **`dashboard/src/components/NavigationView.jsx` (Option 1 Live Navigation View)**:
+   - Full-screen map overlay triggered when navigating to a chosen charger.
+   - Fetches and renders static road driving route polyline via `POST /route` with dual-layer visual casing.
+   - Continuous live GPS position tracking using `navigator.geolocation.watchPosition()`.
+   - Distinct animated navigation puck marker with pulsing halo and orientation tracking.
+   - Smooth map following (`map.panTo`) keeping the vehicle centered, with auto-follow suspension on manual pan.
+   - Built-in movement simulator ("▶ Simulate Drive") for desktop testing and validation.
+   - Graceful fallback for permission denial with helpful advisory banner.
+   - Floating navigation HUD with destination details, remaining distance, ETA, and clean "Exit Navigation" button.
 
-### Deferred to Future Phases
-- Turn-by-turn routing and real-time GPS tracking.
-- User authentication and saved trip history.
+5. **`dashboard/src/App.jsx`**:
+   - Top-level state coordinator managing search inputs, recommendations, selected charger, and active navigation mode.
+
+### Explicit Scope Boundaries & Future Phases
+- **Current Scope (Option 1):** Moving live location on a fixed, static route polyline.
+- **Explicitly Deferred to Future Phases:**
+  - Off-route detection and trajectory divergence triggers.
+  - Automatic dynamic re-routing.
+  - Turn-by-turn voice and textual instruction queue.
+  - User accounts and saved trip histories.
 
 
 

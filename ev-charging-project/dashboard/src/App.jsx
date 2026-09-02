@@ -3,6 +3,7 @@ import axios from 'axios'
 import RecommendationForm from './components/RecommendationForm'
 import MapView from './components/MapView'
 import ResultsList from './components/ResultsList'
+import NavigationView from './components/NavigationView'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -10,6 +11,7 @@ function App() {
   const [results, setResults] = useState(null)
   const [userLocation, setUserLocation] = useState(null)
   const [selectedChargerId, setSelectedChargerId] = useState(null)
+  const [navigatingCharger, setNavigatingCharger] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -18,6 +20,7 @@ function App() {
     setError(null)
     setResults(null)
     setSelectedChargerId(null)
+    setNavigatingCharger(null)
     setUserLocation({ lat: formData.user_lat, lon: formData.user_lon })
 
     try {
@@ -35,6 +38,14 @@ function App() {
           title: 'Network Error: Backend Unreachable',
           message: `Unable to connect to the recommendation API at ${API_BASE_URL}.`,
           suggestion: 'Ensure the FastAPI backend is running via `uvicorn api.main:app --port 8000`.',
+        })
+      } else if (err.response.status === 400) {
+        const d = err.response.data.detail
+        const isStranded = typeof d === 'object' && d?.error === 'VEHICLE_STRANDED'
+        setError({
+          title: isStranded ? '🚨 Vehicle Stranded Alert' : 'Request Error (HTTP 400)',
+          message: typeof d === 'object' ? d.message : d,
+          suggestion: typeof d === 'object' ? d.suggestion : 'Please verify input parameters.',
         })
       } else if (err.response.status === 404) {
         setError({
@@ -72,8 +83,25 @@ function App() {
     setSelectedChargerId(chargerId)
   }
 
+  const handleStartNavigation = (charger) => {
+    setNavigatingCharger(charger)
+  }
+
+  const handleExitNavigation = () => {
+    setNavigatingCharger(null)
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 text-gray-800">
+      {/* Full-Screen Live Navigation Mode (Option 1) */}
+      {navigatingCharger && (
+        <NavigationView
+          charger={navigatingCharger}
+          userLocation={userLocation}
+          onExit={handleExitNavigation}
+        />
+      )}
+
       {/* Header */}
       <header className="bg-slate-900 text-white shadow-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -111,6 +139,7 @@ function App() {
                 userLocation={userLocation}
                 selectedChargerId={selectedChargerId}
                 onSelectCharger={handleSelectCharger}
+                onStartNavigation={handleStartNavigation}
               />
             )}
 
@@ -120,6 +149,7 @@ function App() {
               error={error}
               selectedChargerId={selectedChargerId}
               onSelectCharger={handleSelectCharger}
+              onStartNavigation={handleStartNavigation}
             />
           </div>
         </div>

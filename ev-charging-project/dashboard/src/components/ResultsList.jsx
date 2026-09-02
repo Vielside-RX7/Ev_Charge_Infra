@@ -6,6 +6,7 @@ export default function ResultsList({
   error,
   selectedChargerId,
   onSelectCharger,
+  onStartNavigation,
 }) {
   // Smooth scroll into view when selected from MapView
   useEffect(() => {
@@ -155,17 +156,28 @@ export default function ResultsList({
                 </div>
               </div>
 
-              {/* Secondary Details Footer */}
-              <div className="flex items-center justify-between text-[11px] text-gray-500 mt-2.5 pt-2 border-t border-dashed border-gray-100">
+              {/* Secondary Details Footer + Navigation Action */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-[11px] text-gray-500 mt-2.5 pt-2 border-t border-dashed border-gray-100">
                 <div className="flex items-center gap-2">
                   <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600 font-medium">
                     🔌 {charger.connector_type}
                   </span>
                   <span>{charger.num_ports} {charger.num_ports === 1 ? 'Port' : 'Ports'}</span>
+                  <span className="text-gray-300">•</span>
+                  <span className="font-semibold text-gray-700">
+                    Est. Cost: <span className="text-gray-900 font-bold">₹{charger.estimated_cost_inr.toFixed(2)}</span>
+                  </span>
                 </div>
-                <div className="font-semibold text-gray-700">
-                  Est. Cost: <span className="text-gray-900 font-bold">₹{charger.estimated_cost_inr.toFixed(2)}</span>
-                </div>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (onStartNavigation) onStartNavigation(charger)
+                  }}
+                  className="w-full sm:w-auto bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg shadow-sm hover:shadow active:scale-95 transition-all flex items-center justify-center gap-1.5 shrink-0"
+                >
+                  <span>🚗</span> Start Navigation
+                </button>
               </div>
             </div>
           )

@@ -27,7 +27,12 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "models"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "database"))
 
-from recommendation_engine import load_charger_data, score_and_rank_chargers  # noqa: E402
+from recommendation_engine import (  # noqa: E402
+    load_charger_data,
+    score_and_rank_chargers,
+    get_road_route,
+    VehicleStrandedException,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +126,19 @@ class RecommendationRequest(BaseModel):
         description="Number of ranked recommendations to return (1 to 25)",
         examples=[5],
     )
+    energy_consumption_kwh_per_km: float = Field(
+        default=0.15,
+        gt=0.0,
+        description="Average vehicle energy consumption in kWh/km (default 0.15 = 150 Wh/km)",
+        examples=[0.15],
+    )
+    reserve_battery_percent: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=50.0,
+        description="Safety reserve battery buffer percentage (default 5.0%)",
+        examples=[5.0],
+    )
 
     @model_validator(mode="after")
     def validate_soc_range(self) -> "RecommendationRequest":
@@ -150,10 +168,28 @@ class ChargerRecommendation(BaseModel):
     estimated_charging_time_minutes: float = Field(..., description="Estimated charging duration in minutes")
     estimated_cost_inr: float = Field(..., description="Estimated charging cost in INR")
     compatible: bool = Field(..., description="Whether the charger matches the requested connector standard")
+    usable_range_km: Optional[float] = Field(default=None, description="Estimated vehicle usable range in km")
     normalized_distance: Optional[float] = Field(default=None, description="Normalized distance penalty [0.0 - 1.0]")
     normalized_cost: Optional[float] = Field(default=None, description="Normalized cost penalty [0.0 - 1.0]")
     normalized_charging_time: Optional[float] = Field(default=None, description="Normalized charging time penalty [0.0 - 1.0]")
     final_score: float = Field(..., description="Multi-criteria optimization final score")
+
+
+class RouteRequest(BaseModel):
+    user_lat: float = Field(..., description="Current user latitude", examples=[12.2958])
+    user_lon: float = Field(..., description="Current user longitude", examples=[76.6394])
+    charger_id: Optional[int] = Field(default=None, description="Target charger database ID", examples=[7])
+    charger_lat: Optional[float] = Field(default=None, description="Target charger latitude (optional if charger_id provided)")
+    charger_lon: Optional[float] = Field(default=None, description="Target charger longitude (optional if charger_id provided)")
+
+
+class RouteResponse(BaseModel):
+    charger_id: Optional[int] = Field(default=None, description="Target charger database ID")
+    charger_name: Optional[str] = Field(default="", description="Target charger name")
+    distance_km: float = Field(..., description="Driving road distance in kilometers")
+    travel_time_minutes: float = Field(..., description="Estimated travel duration in minutes")
+    geometry: Dict[str, Any] = Field(..., description="GeoJSON LineString route geometry")
+    is_fallback: bool = Field(default=False, description="Whether fallback straight-line geometry was used")
 
 
 class HealthResponse(BaseModel):
@@ -172,6 +208,7 @@ def root() -> Dict[str, str]:
         "docs": "/docs",
         "health": "/health",
         "recommend": "/recommend",
+        "route": "/route",
     }
 
 
@@ -199,6 +236,58 @@ def health_check() -> HealthResponse:
 
 
 @app.post(
+    "/route",
+    response_model=RouteResponse,
+    summary="Get Detailed OSRM Route to Charger",
+)
+def get_route(request: RouteRequest) -> RouteResponse:
+    """
+    Fetch on-demand full GeoJSON road driving route geometry, distance, and duration
+    from user location to a specific target charger.
+    """
+    df = load_charger_data()
+    c_lat, c_lon = request.charger_lat, request.charger_lon
+    c_name = ""
+
+    if request.charger_id is not None:
+        matching = df[df["id"] == request.charger_id]
+        if matching.empty:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Charger with id={request.charger_id} not found in database.",
+            )
+        row = matching.iloc[0]
+        c_lat = float(row["latitude"])
+        c_lon = float(row["longitude"])
+        c_name = str(row["name"])
+    elif c_lat is None or c_lon is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either charger_id or both charger_lat and charger_lon must be provided.",
+        )
+
+    route_info = get_road_route(
+        user_lat=request.user_lat,
+        user_lon=request.user_lon,
+        charger_lat=c_lat,
+        charger_lon=c_lon,
+        include_geometry=True,
+    )
+
+    return RouteResponse(
+        charger_id=request.charger_id,
+        charger_name=c_name,
+        distance_km=route_info["distance_km"],
+        travel_time_minutes=route_info["travel_time_minutes"],
+        geometry=route_info["geometry"] or {
+            "type": "LineString",
+            "coordinates": [[request.user_lon, request.user_lat], [c_lon, c_lat]],
+        },
+        is_fallback=route_info.get("is_fallback", False),
+    )
+
+
+@app.post(
     "/recommend",
     response_model=List[ChargerRecommendation],
     summary="Get Multi-Criteria EV Charger Recommendations",
@@ -219,6 +308,8 @@ def get_recommendations(request: RecommendationRequest) -> List[Dict[str, Any]]:
             arrival_datetime=request.arrival_datetime,
             max_search_radius_km=request.max_search_radius_km,
             top_n=request.top_n,
+            energy_consumption_kwh_per_km=request.energy_consumption_kwh_per_km,
+            reserve_battery_percent=request.reserve_battery_percent,
             debug_mode=False,
         )
 
@@ -230,6 +321,17 @@ def get_recommendations(request: RecommendationRequest) -> List[Dict[str, Any]]:
 
         return recommendations
 
+    except VehicleStrandedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "VEHICLE_STRANDED",
+                "message": str(exc),
+                "usable_range_km": round(exc.usable_range_km, 1),
+                "current_soc_percent": exc.current_soc_percent,
+                "suggestion": "Your remaining battery charge is insufficient to safely reach any station in range. Consider emergency charging options or reducing target distance.",
+            },
+        )
     except HTTPException:
         raise
     except Exception as exc:

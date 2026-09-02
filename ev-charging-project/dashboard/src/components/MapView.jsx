@@ -98,6 +98,7 @@ export default function MapView({
   userLocation,
   selectedChargerId,
   onSelectCharger,
+  onStartNavigation,
 }) {
   const markerRefs = useRef({})
   const defaultCenter = [12.2958, 76.6394] // Mysore Center
@@ -185,10 +186,20 @@ export default function MapView({
                       </div>
 
                       {!charger.compatible && (
-                        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] p-1 rounded font-medium">
+                        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] p-1 rounded font-medium mb-1.5">
                           ⚠️ May not match your connector standard (Fallback)
                         </div>
                       )}
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (onStartNavigation) onStartNavigation(charger)
+                        }}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] py-1 px-2 rounded-md shadow-sm transition-all flex items-center justify-center gap-1 mt-1 active:scale-95"
+                      >
+                        <span>🚗</span> Navigate
+                      </button>
                     </div>
                   </Popup>
                 </Marker>
