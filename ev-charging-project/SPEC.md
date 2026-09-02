@@ -22,16 +22,20 @@
 - **Database:** PostgreSQL (SQLAlchemy + psycopg2)
 - **IoT/Testbed:** ESP32 / Raspberry Pi, OCPP, MQTT
 
-## Database Schema
+## Database Schema & Auto-Seeding
 
 Database: PostgreSQL 16, run via Docker Compose (see `docker-compose.yml`). Connection configured via `DATABASE_URL` in `.env`.
 
-- **chargers** — EV charging station metadata, location, connector type, and power specs
-- **users** — Registered EV drivers with vehicle info and charging preferences
-- **charging_sessions** — Individual charging session records (energy, status, SoC, cost)
-- **reviews** — User reviews and NLP-derived sentiment scores for chargers
-- **faults** — Charger fault/downtime event reports and resolution tracking
+- **chargers** — EV charging station metadata, location, connector type, and power specs (382 records)
+- **users** — Registered EV drivers with vehicle info and charging preferences (60 records)
+- **charging_sessions** — Individual charging session records (energy, status, SoC, cost) (34,357 records)
+- **reviews** — User reviews and NLP-derived sentiment scores for chargers (7,158 records)
+- **faults** — Charger fault/downtime event reports and resolution tracking (2,235 records)
 - **maintenance_logs** — Scheduled and unscheduled maintenance records per charger
+
+### Database Seeding (`database/seed/init_seed.sql.gz`)
+- **Teammate Zero-Configuration Auto-Init:** `docker-compose.yml` mounts `./database/seed:/docker-entrypoint-initdb.d:ro`. When a teammate runs `docker compose up -d` on a fresh machine, PostgreSQL automatically restores all 6 tables and 382 Karnataka charging stations from the pre-packaged gzip seed archive without requiring external API tokens or pipeline execution.
+- **Archive Size:** 1.03 MB compressed (`.sql.gz`) / 5.17 MB uncompressed UTF-8 SQL.
 
 ## Data Ingestion
 

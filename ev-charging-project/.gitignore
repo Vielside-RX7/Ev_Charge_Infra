@@ -76,6 +76,8 @@ pnpm-debug.log*
 *.sqlite3
 *.dump
 *.sql.gz
+!database/seed/init_seed.sql.gz
+!database/seed/*.sql
 
 # ── Machine Learning Artifacts & Raw Datasets ────────────────────────────────
 # Generic model dumps and large training checkpoints

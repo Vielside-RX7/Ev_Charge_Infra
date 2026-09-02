@@ -50,30 +50,50 @@ Activate it:
 pip install -r requirements.txt
 ```
 
-### 4. Database setup
+### 4. Database Setup & Automatic Seeding
 
-Start the PostgreSQL container, copy the environment file, and initialise the schema:
+Start the PostgreSQL container and copy the environment configuration:
 
 ```bash
-docker compose up -d
 cp .env.example .env
-python database/init_db.py
+docker compose up -d
 ```
 
-### 5. Run the FastAPI server
+> [!TIP]
+> **Automatic Database Seeding:** `docker compose up -d` automatically seeds the database with all **382 Karnataka charging stations**, 34,000+ session logs, 7,000+ reviews, and fault records from [`database/seed/init_seed.sql.gz`](database/seed/init_seed.sql.gz).
+> Teammates **do NOT need an `OCM_API_KEY`** or need to run the data ingestion pipeline manually.
 
+> [!IMPORTANT]
+> **Fresh Volume Requirement:** PostgreSQL only executes init scripts in `/docker-entrypoint-initdb.d/` on a **completely empty data volume**. If you previously created an unseeded or broken container volume, reset it first before starting:
+> ```bash
+> docker compose down -v
+> docker compose up -d
+> ```
+
+### 5. Pretrained Model Artifacts
+
+Pretrained model weights in `models/artifacts/` (`reliability_model.pkl`, `occupancy_model.pkl`, ~320 KB total) are committed directly to Git, enabling immediate API execution after cloning.
+
+If you ever wish to re-train the models from scratch on the database:
 ```bash
-uvicorn api.main:app --reload
+python models/reliability_model.py
+python models/occupancy_model.py
 ```
 
-The API will be available at `http://127.0.0.1:8000`. Interactive docs at `http://127.0.0.1:8000/docs`.
-
-### 6. Run the React dashboard
+### 6. Run the FastAPI Backend Server
 
 ```bash
-cd dashboard && npm install && npm run dev
+uvicorn api.main:app --reload --port 8000
+```
+
+The API will be available at `http://127.0.0.1:8000`. Interactive Swagger UI documentation is available at `http://127.0.0.1:8000/docs`.
+
+### 7. Run the React Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
 ```
 
 The dashboard will be available at `http://localhost:5173`.
-
-> **Note:** The FastAPI backend must be running separately (step 4) for the dashboard to communicate with the API.
