@@ -1,0 +1,135 @@
+{
+  "dataset_name": "Virtual EV LSTM Sequential Energy Dataset",
+  "description": "Sequential driving telemetry windows for future EV energy prediction (Change 15).",
+  "random_seed": 42,
+  "data_type": "synthetic_virtual_ev",
+  "sampling_interval_sec": 5.0,
+  "sequence_length_timesteps": 20,
+  "sequence_length_seconds": 100.0,
+  "prediction_horizon_timesteps": 6,
+  "prediction_horizon_seconds": 30.0,
+  "stride_timesteps": 2,
+  "stride_seconds": 10.0,
+  "target_definition": {
+    "name": "target_future_energy_kwh",
+    "description": "Net battery energy (kWh) consumed over the subsequent prediction horizon H following the observed sequence window.",
+    "formula": "sum(step_energy_kwh[t_N+1 : t_N+H])",
+    "leakage_guard": "Future step energies from t_N+1 to t_N+H are strictly excluded from the input sequence X (t_1 to t_N)."
+  },
+  "features": {
+    "order": [
+      "speed_kmph",
+      "latitude",
+      "longitude",
+      "soc_percent",
+      "step_distance_km",
+      "step_energy_kwh",
+      "elevation_m",
+      "elevation_delta_m",
+      "traffic_density_score",
+      "ambient_temperature_c",
+      "battery_capacity_kwh",
+      "driving_style_encoded"
+    ],
+    "count": 12,
+    "time_varying": [
+      "speed_kmph",
+      "latitude",
+      "longitude",
+      "soc_percent",
+      "step_distance_km",
+      "step_energy_kwh",
+      "elevation_m",
+      "elevation_delta_m",
+      "traffic_density_score"
+    ],
+    "static_context": [
+      "ambient_temperature_c",
+      "battery_capacity_kwh",
+      "driving_style_encoded"
+    ]
+  },
+  "trip_split": {
+    "split_level": "trip_id (disjoint partition)",
+    "train_trip_count": 840,
+    "val_trip_count": 180,
+    "test_trip_count": 180,
+    "total_trips": 1200,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15
+  },
+  "sequence_counts": {
+    "train_sequences": 130160,
+    "val_sequences": 24852,
+    "test_sequences": 25036,
+    "total_sequences": 180048
+  },
+  "shapes": {
+    "X_train": [
+      130160,
+      20,
+      12
+    ],
+    "y_train": [
+      130160
+    ],
+    "X_val": [
+      24852,
+      20,
+      12
+    ],
+    "y_val": [
+      24852
+    ],
+    "X_test": [
+      25036,
+      20,
+      12
+    ],
+    "y_test": [
+      25036
+    ]
+  },
+  "normalization": {
+    "method": "StandardScaler (zero mean, unit variance)",
+    "fitted_on": "X_train only (validation and test sets never used for fitting)",
+    "feature_means": {
+      "speed_kmph": 48.248514,
+      "latitude": 12.290885,
+      "longitude": 76.64496,
+      "soc_percent": 46.717189,
+      "step_distance_km": 0.067012,
+      "step_energy_kwh": 0.012167,
+      "elevation_m": 763.664825,
+      "elevation_delta_m": 0.075207,
+      "traffic_density_score": 0.375414,
+      "ambient_temperature_c": 29.800298,
+      "battery_capacity_kwh": 32.965185,
+      "driving_style_encoded": 0.932606
+    },
+    "feature_scales": {
+      "speed_kmph": 20.882402,
+      "latitude": 0.159929,
+      "longitude": 0.1635,
+      "soc_percent": 23.250253,
+      "step_distance_km": 0.029003,
+      "step_energy_kwh": 0.005628,
+      "elevation_m": 52.007513,
+      "elevation_delta_m": 0.603226,
+      "traffic_density_score": 0.196296,
+      "ambient_temperature_c": 5.705352,
+      "battery_capacity_kwh": 4.726745,
+      "driving_style_encoded": 0.672484
+    }
+  },
+  "target_summary_statistics": {
+    "train_y_mean_kwh": 0.072101,
+    "train_y_std_kwh": 0.029831,
+    "train_y_min_kwh": 0.0006,
+    "train_y_max_kwh": 0.2639,
+    "test_y_mean_kwh": 0.073015,
+    "test_y_min_kwh": 0.0006,
+    "test_y_max_kwh": 0.21219
+  }
+}

@@ -1,0 +1,279 @@
+================================================================================
+AI-POWERED INTELLIGENT EV CHARGING INFRASTRUCTURE & NAVIGATION PLATFORM
+STAKEHOLDER PROJECT BRIEFING & TECHNICAL DOSSIER
+================================================================================
+Date: September 2026
+Document Version: 1.0
+Target Audience: Project Stakeholders, Technical Advisors, Evaluators
+
+--------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY & VALUE PROPOSITION
+--------------------------------------------------------------------------------
+Electric vehicle (EV) adoption in India faces major adoption barriers known as 
+"Range Anxiety" and "Charging Anxiety". EV drivers frequently encounter:
+1. Broken, malfunctioning, or offline chargers.
+2. Long, unpredictable queues with no occupancy visibility.
+3. Chargers with incompatible connectors or inadequate power output.
+4. Battery depletion on routes where actual consumption exceeds nominal vehicle range 
+   due to traffic, topography, climate control, and aggressive driving.
+
+This project delivers a production-grade, end-to-end Intelligent EV Charging and 
+Navigation Platform designed for the Indian EV ecosystem (seeded with 382 real 
+commercial stations across Karnataka). 
+
+The platform unites:
+- Multi-criteria machine learning models for charger reliability, occupancy forecasting, 
+  and user review sentiment analysis.
+- An intelligent recommendation engine that ranks stations based on user preferences, 
+  predicted wait times, pricing, and failure probabilities.
+- A virtual vehicle telemetry and Virtual OBD-II provider that emulates real EV data.
+- Interactive map-based route planning, road routing, and destination battery feasibility.
+- A synthetic data collection pipeline and machine learning models (Linear Regression 
+  and XGBoost) for predicting trip-level energy consumption.
+- An OCPP 1.6-J IoT testbed for protocol-level charger communication.
+
+--------------------------------------------------------------------------------
+2. COMPLETE TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+The project utilizes a modern, resilient, decoupled micro-architecture:
+
+A. BACKEND & API LAYER
+   - Language: Python 3.10+
+   - Web Framework: FastAPI (high-performance asynchronous web framework)
+   - ASGI Server: Uvicorn (with hot reload enabled)
+   - Data Validation: Pydantic schemas (strict type validation and contract safety)
+   - ORM / Database Toolkit: SQLAlchemy 2.0
+   - Routing Services: OSRM (Open Source Routing Machine) integration & Haversine geo-algorithms
+
+B. DATABASE & STORAGE
+   - Relational Database: PostgreSQL 15
+   - Containerization: Docker & Docker Compose
+   - Automated Data Seeding: Auto-initializes on startup with:
+     * 382 Karnataka commercial charging stations (scraped from Open Charge Map)
+     * 34,000+ historical charging session logs
+     * 7,000+ user review and sentiment entries
+     * Comprehensive charger hardware fault records
+
+C. MACHINE LEARNING & DATA PIPELINE
+   - Core ML Libraries: Scikit-Learn, XGBoost, SciPy, NumPy, Pandas
+   - Natural Language Processing (NLP): NLTK, TextBlob, VADER sentiment analyzer
+   - Model Serialization: Joblib (persisting trained models and full preprocessing pipelines)
+   - Feature Engineering: Scikit-Learn ColumnTransformer, StandardScaler, OneHotEncoder
+
+D. FRONTEND & VISUALIZATION DASHBOARD
+   - Core Framework: React 18 with Vite (rapid HMR and optimized bundling)
+   - Styling: Tailwind CSS & Vanilla CSS (sleek dark mode, responsive glassmorphism)
+   - Geospatial & Maps: Leaflet & React-Leaflet (custom vehicle pins, destination flags, 
+     clustered charger markers, and dual-layer interactive road polylines)
+   - Icons: Lucide React
+   - HTTP Client: Axios (REST API communication with FastAPI backend)
+
+E. HARDWARE & IOT PROTOCOL TESTBED
+   - Protocol: OCPP 1.6-J (Open Charge Point Protocol JSON over WebSockets)
+   - Hardware Target: ESP32 microcontroller / Raspberry Pi firmware client
+   - Central System: Python-based WebSocket server simulating EVSE (EV Supply Equipment)
+
+--------------------------------------------------------------------------------
+3. WHAT THE SYSTEM DOES (CORE SYSTEM MODULES)
+--------------------------------------------------------------------------------
+
+MODULE 1: CHARGER RELIABILITY PREDICTION
+- Problem: EV drivers arrive at chargers only to discover they are broken or offline.
+- Solution: A Random Forest / XGBoost model trained on historical fault reports, uptime 
+  records, session completion ratios, and review sentiment.
+- Output: A continuous reliability score (0.0 to 1.0) indicating the statistical 
+  probability that a station will successfully charge the vehicle.
+
+MODULE 2: OCCUPANCY & WAIT-TIME FORECASTING
+- Problem: Inability to predict whether a station will have available plugs upon arrival.
+- Solution: A predictive model that factors in time-of-day, day-of-week, station power rating, 
+  and historical usage patterns.
+- Output: Current occupancy probability and estimated waiting time in minutes.
+
+MODULE 3: MULTI-CRITERIA RECOMMENDATION ENGINE
+- Evaluates all stations within a customizable search radius (e.g., 25 km).
+- Filters by connector compatibility (e.g., CCS2, Type 2, CHAdeMO) and vehicle capacity.
+- Scores and ranks stations using an intelligent multi-attribute utility formula:
+  * Travel distance / time
+  * Predicted reliability score
+  * Estimated wait time
+  * Charging speed / power output (kW)
+  * Tariff / pricing per kWh
+
+MODULE 4: VIRTUAL EV TELEMETRY & VIRTUAL OBD PROVIDER
+- Eliminates the need for expensive physical EV hardware during development while 
+  providing an authentic software test vehicle.
+- Produces a standard 13-field telemetry stream:
+  * Vehicle ID, Timestamp, Latitude, Longitude, Speed (km/h)
+  * Battery Capacity (kWh), Current SoC (%), Remaining Energy (kWh)
+  * Cumulative Energy Consumed (kWh), Estimated Range (km)
+  * Vehicle Status (Standby, Driving, Paused, Destination Reached)
+  * Data Source & Connection Status
+- Live GPS Initialization: Requests browser/device GPS on mount; gracefully falls back 
+  to predefined Mysore coordinates if permission is denied.
+- Virtual OBD Provider Abstraction: Decouples the telemetry source from React state, 
+  establishing an exact drop-in replacement point for real Bluetooth/OBD hardware.
+
+MODULE 5: INTERACTIVE TRIP PLANNING & ROAD ROUTING
+- Map-Based Destination Selection: Click anywhere on the Leaflet map to set or modify 
+  a driving destination (marked by an animated 🏁 pin).
+- Real Road Route Generation: Calls the backend `/route` endpoint (OSRM) to generate 
+  true road geometry, route distance (km), and estimated travel time (min).
+- Visual Road Polyline: Renders a dual-layer road polyline (deep violet casing + vibrant violet core).
+
+MODULE 6: DETERMINISTIC DESTINATION FEASIBILITY ANALYSIS
+- Baseline physics calculation: `estimated_trip_energy_kwh = route_distance_km * 0.150 kWh/km`.
+- Dynamic comparison against `telemetry.remaining_energy_kwh`.
+- Real-time feasibility badge:
+  * "Destination Reachable" (emerald) when battery is sufficient.
+  * "Charging Required" (amber) when trip energy exceeds available battery.
+- Dynamically updates as the simulated vehicle drives and drains its battery.
+
+MODULE 7: SIMULATION CONTROLS & LIFECYCLE
+- Interactive controller with complete state machine:
+  * [ Start Drive ]: Moves the vehicle along the road route, draining energy at 0.150 kWh/km.
+  * [ Pause ]: Freezes motion, zeroes speed, stops battery drain, preserves coordinates.
+  * [ Resume ]: Continues driving from exact paused progress.
+  * [ Reset ]: Restores vehicle to its captured initial baseline (initial coordinates, 
+    initial 20% SoC, 6.0 kWh remaining, 0 consumed) without clearing the destination.
+
+MODULE 8: DATA COLLECTION PIPELINE & ML ENERGY PREDICTION
+- Frontend Trip Recorder: Silently records intermediate telemetry points during simulated 
+  drives and aggregates completed trip features; discards incomplete trips on reset.
+- Synthetic Dataset Generator (`pipeline/generate_energy_dataset.py`):
+  * Generates 1,200 reproducible trip samples (seed=42) across 11 input features.
+  * Introduces controlled physical variations: aerodynamic drag at higher speeds, 
+    elevation potential energy (ascent drain / descent regen), traffic congestion friction, 
+    HVAC cooling draw above 25°C, and driving styles (Eco, Normal, Aggressive).
+- Data Dictionary (`ENERGY_CONSUMPTION_DATA_DICTIONARY.md`): Full documentation of every column.
+- Model 1: Baseline Linear Regression (`models/energy_regression_model.py`):
+  * Pipeline: StandardScaler + OneHotEncoder + LinearRegression
+  * Test Metrics: MAE = 0.1862 kWh, RMSE = 0.2860 kWh, R² = 0.9914
+- Model 2: XGBoost Regressor (`models/energy_xgboost_model.py`):
+  * Pipeline: OneHotEncoder + Passthrough + XGBRegressor
+  * Test Metrics: MAE = 0.1302 kWh, RMSE = 0.2110 kWh, R² = 0.9953 (30.1% MAE reduction)
+  * Feature Importances: Distance (66.0%), Duration (27.9%), Elevation (1.5%), Style (1.1%).
+
+--------------------------------------------------
+4. REPOSITORY DIRECTORY & FILE STRUCTURE
+--------------------------------------------------
+```
+ev-charging-project/
+│
+├── api/                                    # FastAPI Backend Web Application
+│   ├── main.py                             # API entry point & routes (/recommend, /route, /health)
+│   ├── schemas.py                          # Pydantic request/response validation schemas
+│   └── utils.py                            # Distance calculation & helper utilities
+│
+├── dashboard/                              # React + Vite Frontend Web Application
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ActiveTripCard.jsx          # Trip planner, feasibility badge, simulation buttons
+│   │   │   ├── ActiveVehicleCard.jsx       # Vehicle specs (identity, battery, connector)
+│   │   │   ├── VirtualEvTelemetry.jsx      # Live 13-field telemetry HUD & GPS status badge
+│   │   │   ├── RecommendationForm.jsx      # Auto-populated charger recommendation query form
+│   │   │   ├── ResultsList.jsx             # Ranked station recommendation cards
+│   │   │   ├── MapView.jsx                 # Leaflet map (stations, vehicle puck, destination, route)
+│   │   │   └── NavigationView.jsx          # Full-screen charger navigation & simulation mode
+│   │   ├── telemetry/
+│   │   │   ├── TelemetryContext.jsx        # Telemetry React state, GPS init, immutable baseline
+│   │   │   ├── virtualEvModel.js           # Standard telemetry interface & calculation logic
+│   │   │   ├── virtualObdProvider.js       # Telemetry provider abstraction (OBD replacement point)
+│   │   │   └── vehicleProfile.js           # Active vehicle identity, capacity, and connector
+│   │   ├── trip/
+│   │   │   ├── TripContext.jsx             # Trip state, simulation controller, route management
+│   │   │   ├── tripModel.js                # Trip status, energy estimation & feasibility formulas
+│   │   │   ├── tripRouteService.js         # API client fetching OSRM road geometry
+│   │   │   └── tripRecorder.js             # Telemetry sample recorder for data collection
+│   │   ├── App.jsx                         # Main dashboard layout
+│   │   └── main.jsx                        # React root entry point
+│   ├── package.json                        # Node dependencies & scripts
+│   └── vite.config.js                      # Vite build configuration
+│
+├── data/                                   # Data Assets & Processed Datasets
+│   └── processed/
+│       ├── charger_reliability_features.csv    # Features for charger reliability scoring
+│       ├── charger_occupancy_features.csv      # Features for occupancy & queue forecasting
+│       ├── energy_consumption_features.csv     # 1,200 simulated EV trip feature rows (Phase 12)
+│       └── ENERGY_CONSUMPTION_DATA_DICTIONARY.md # Comprehensive schema documentation
+│
+├── database/                               # Database Schema, Migrations & Seeds
+│   ├── models.py                           # SQLAlchemy database models (Charger, Session, Review, etc.)
+│   ├── connection.py                       # PostgreSQL engine and session factory
+│   └── seed/
+│       └── init_seed.sql.gz                # Compressed SQL seed (382 chargers, 34k sessions)
+│
+├── models/                                 # Machine Learning Training & Inference
+│   ├── reliability_model.py                # Model training for charger reliability
+│   ├── occupancy_model.py                  # Model training for station occupancy
+│   ├── nlp_review_model.py                 # Sentiment analysis on user reviews
+│   ├── recommendation_engine.py            # Multi-criteria recommendation ranking algorithm
+│   ├── energy_regression_model.py          # Baseline Linear Regression for trip energy (Phase 13)
+│   ├── energy_xgboost_model.py             # XGBoost Regressor for trip energy (Phase 14)
+│   └── artifacts/                          # Serialized Model Weights & Metadata
+│       ├── reliability_model.pkl           # Trained reliability model weights
+│       ├── reliability_model_features.json # Reliability feature schema
+│       ├── occupancy_model.pkl             # Trained occupancy model weights
+│       ├── occupancy_model_features.json   # Occupancy feature schema
+│       ├── energy_regression_model.pkl     # Trained Linear Regression pipeline
+│       ├── energy_regression_model_features.json # Regression schema & evaluation metrics
+│       ├── energy_xgboost_model.pkl        # Trained XGBoost pipeline
+│       └── energy_xgboost_model_features.json # XGBoost schema, metrics & feature importances
+│
+├── pipeline/                               # Data Pipelines & Validation Utilities
+│   ├── generate_synthetic_data.py          # Generator for synthetic charging sessions & reviews
+│   ├── build_features.py                   # Feature extraction for reliability & occupancy models
+│   ├── generate_energy_dataset.py          # Phase 12 Virtual EV trip energy dataset generator
+│   └── validate_energy_dataset.py          # Automated dataset integrity & boundary validation script
+│
+├── testbed/                                # OCPP Protocol & Hardware Testbed
+│   ├── ocpp_server.py                      # Central System server handling OCPP 1.6-J messages
+│   └── esp32_client_sim.py                 # Client emulator simulating charger-side OCPP events
+│
+├── docker-compose.yml                      # PostgreSQL container specification
+├── requirements.txt                        # Python dependencies
+├── SPEC.md                                 # Full architectural specification & project phases
+└── README.md                               # Setup, installation, and usage instructions
+```
+
+--------------------------------------------------------------------------------
+5. MILESTONE SUMMARY & CURRENT PROGRESS
+--------------------------------------------------------------------------------
+- Phase 1–5: Built Virtual EV telemetry model, navigation simulator sync, 0.15 kWh/km battery 
+  drain, telemetry-driven recommendation form, and decoupled Active Vehicle Profile.
+- Phase 6: Introduced pluggable Virtual OBD Provider abstraction (ready for real OBD-II hardware).
+- Phase 7: Built TripContext, map-based destination selection (🏁 pin), and live origin tracking.
+- Phase 8: Generated real road routes via OSRM, rendered interactive dual-layer route polylines.
+- Phase 9: Added deterministic trip energy estimation and live battery feasibility analysis.
+- Phase 11: Added live device GPS initialization with fallback and explicit Start/Pause/Resume/Reset 
+  simulation controls with immutable baseline recovery.
+- Phase 12: Created tripRecorder.js, generated a 1,200-row reproducible energy dataset 
+  (`energy_consumption_features.csv`), and wrote an automated validation utility.
+- Phase 13: Trained and serialized baseline Linear Regression model (MAE: 0.1862 kWh, R²: 0.9914).
+- Phase 14: Trained and serialized XGBoost Regressor model (MAE: 0.1302 kWh, R²: 0.9953, 
+  30.1% error reduction over baseline).
+
+--------------------------------------------------------------------------------
+6. STAKEHOLDER CHECKLIST & RECOMMENDED NEXT STEPS
+--------------------------------------------------------------------------------
+The platform foundation is fully established, verified, and operational. 
+Recommended upcoming priorities for discussion and decision:
+
+[ ] 1. Energy-Aware A* Routing Integration:
+       Connect the trained XGBoost energy prediction model directly into graph edge weights 
+       to compute the most energy-efficient road route rather than just shortest distance.
+
+[ ] 2. Dynamic Mid-Trip En-Route Charger Insertion:
+       When feasibility evaluation determines that "Charging Required" (battery deficit), 
+       automatically recommend and inject optimal charging stops along the active route.
+
+[ ] 3. Physical Hardware Validation:
+       Pair the frontend telemetry provider with an actual ELM327 Bluetooth/BLE OBD-II scanner 
+       via the Web Bluetooth API to stream real-world vehicle metrics.
+
+[ ] 4. Cloud Deployment & CI/CD:
+       Deploy the FastAPI backend and PostgreSQL database to AWS/GCP (Dockerized) and host the 
+       React dashboard on Vercel or Netlify.
+================================================================================
+END OF DOSSIER
+================================================================================

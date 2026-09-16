@@ -1,0 +1,104 @@
+{
+  "model_name": "Virtual EV LSTM Sequential Energy Predictor",
+  "model_type": "Recurrent Neural Network (LSTM)",
+  "framework": "TensorFlow 2.21.0 / Keras 3.15.1",
+  "architecture": {
+    "input_shape": [
+      20,
+      12
+    ],
+    "lstm_units": 64,
+    "dropout": 0.2,
+    "dense_units": 32,
+    "output_units": 1,
+    "output_activation": "softplus",
+    "non_negativity_formulation": "Dense(1, activation='softplus') guarantees smooth, strictly non-negative physical energy predictions without clipping."
+  },
+  "hyperparameters": {
+    "optimizer": "Adam",
+    "learning_rate": 0.001,
+    "batch_size": 256,
+    "max_epochs": 25,
+    "loss_function": "mean_squared_error",
+    "random_seed": 42,
+    "early_stopping_patience": 4,
+    "reduce_lr_patience": 2
+  },
+  "exact_target_definition": {
+    "target_variable": "target_future_energy_kwh",
+    "input_sequence_timesteps": "t1 ... t20 (100 seconds observed driving history)",
+    "prediction_horizon_timesteps": "t21 ... t26 (subsequent 30-second future interval)",
+    "horizon_length_timesteps": 6,
+    "horizon_length_seconds": 30.0,
+    "sampling_interval_sec": 5.0,
+    "stride_timesteps": 2,
+    "formula": "sum(step_energy_kwh[t21 ... t26]) = E_consumed[t26] - E_consumed[t20]",
+    "anti_leakage_guarantee": "Strict chronological boundary: no future observations (t >= 21) appear in the input sequence (t1 ... t20).",
+    "feature_order": [
+      "speed_kmph",
+      "latitude",
+      "longitude",
+      "soc_percent",
+      "step_distance_km",
+      "step_energy_kwh",
+      "elevation_m",
+      "elevation_delta_m",
+      "traffic_density_score",
+      "ambient_temperature_c",
+      "battery_capacity_kwh",
+      "driving_style_encoded"
+    ],
+    "scaler_artifact": "models/artifacts/energy_lstm_scaler.pkl"
+  },
+  "sample_counts": {
+    "train_sequences": 130160,
+    "val_sequences": 24852,
+    "test_sequences": 25036,
+    "total_sequences": 180048
+  },
+  "training_execution": {
+    "epochs_completed": 9,
+    "best_val_loss_mse": 0.000142,
+    "best_val_mae_kwh": 0.009275,
+    "final_train_loss_mse": 0.000232,
+    "final_val_loss_mse": 0.000166
+  },
+  "prediction_sanity_report": {
+    "min_prediction_kwh": 0.015164,
+    "max_prediction_kwh": 0.205141,
+    "mean_prediction_kwh": 0.075563,
+    "negative_prediction_count": 0,
+    "negative_prediction_magnitude_kwh": 0.0,
+    "test_mae_kwh": 0.008903,
+    "test_rmse_kwh": 0.011545,
+    "test_r2_score": 0.84774,
+    "is_finite": true
+  },
+  "comparative_modeling_experiments": {
+    "experiment_A_tabular_trip_models": {
+      "scope": "Macroscopic whole-trip summary (1 row = 1 full trip of 2-65 km)",
+      "target": "Entire trip energy consumption (energy_consumed_kwh)",
+      "linear_regression": {
+        "mae_kwh": 0.1862,
+        "rmse_kwh": 0.286,
+        "r2": 0.9914
+      },
+      "xgboost_regressor": {
+        "mae_kwh": 0.1302,
+        "rmse_kwh": 0.211,
+        "r2": 0.9953
+      }
+    },
+    "experiment_B_sequential_lstm_model": {
+      "scope": "Microscopic sliding telemetry window (20 steps = 100s driving history)",
+      "target": "Subsequent 30-second near-term interval energy (target_future_energy_kwh)",
+      "lstm_recurrent": {
+        "mae_kwh": 0.008903,
+        "rmse_kwh": 0.011545,
+        "r2": 0.84774
+      }
+    },
+    "methodology_note": "Tabular models and the LSTM model are distinct modeling experiments addressing different prediction granularities and horizons. They should not be combined into a single directly comparable leaderboard."
+  },
+  "synthetic_data_disclosure": "The LSTM model is trained and evaluated strictly on synthetic/simulated Virtual EV driving telemetry generated via the project's physics simulation architecture. Reported metrics reflect goodness-of-fit on this simulated distribution and do not constitute validated real-world physical EV measurements."
+}

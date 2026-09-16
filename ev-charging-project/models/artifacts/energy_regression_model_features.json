@@ -1,0 +1,54 @@
+{
+  "model_name": "LinearRegression",
+  "target": "energy_consumed_kwh",
+  "metrics": {
+    "mae": 0.1862,
+    "rmse": 0.286,
+    "r2": 0.9914
+  },
+  "dataset_split": {
+    "total_samples": 1200,
+    "train_samples": 960,
+    "test_samples": 240,
+    "test_size": 0.2,
+    "random_state": 42
+  },
+  "features": {
+    "numeric_features": [
+      "battery_capacity_kwh",
+      "starting_soc_percent",
+      "distance_km",
+      "trip_duration_minutes",
+      "average_speed_kmph",
+      "elevation_gain_m",
+      "traffic_density_score",
+      "ambient_temperature_c"
+    ],
+    "categorical_features": [
+      "vehicle_id",
+      "weather_condition",
+      "driving_style"
+    ],
+    "encoded_feature_count": 17,
+    "encoded_feature_names": [
+      "battery_capacity_kwh",
+      "starting_soc_percent",
+      "distance_km",
+      "trip_duration_minutes",
+      "average_speed_kmph",
+      "elevation_gain_m",
+      "traffic_density_score",
+      "ambient_temperature_c",
+      "vehicle_id_VIRTUAL_EV_001",
+      "vehicle_id_VIRTUAL_EV_002",
+      "weather_condition_Clear",
+      "weather_condition_Hot",
+      "weather_condition_Overcast",
+      "weather_condition_Rain",
+      "driving_style_Aggressive",
+      "driving_style_Eco",
+      "driving_style_Normal"
+    ]
+  },
+  "synthetic_data_disclosure": "Model trained and evaluated on synthetic Virtual EV trip data. Metrics reflect performance on simulated distribution and do not represent validated real-world physical EV measurements."
+}

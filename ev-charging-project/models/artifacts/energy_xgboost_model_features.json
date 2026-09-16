@@ -1,0 +1,146 @@
+{
+  "model_name": "XGBRegressor",
+  "hyperparameters": {
+    "n_estimators": 120,
+    "learning_rate": 0.06,
+    "max_depth": 4,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "objective": "reg:squarederror",
+    "random_state": 42,
+    "n_jobs": -1
+  },
+  "target": "energy_consumed_kwh",
+  "metrics": {
+    "mae": 0.1302,
+    "rmse": 0.211,
+    "r2": 0.9953
+  },
+  "dataset_split": {
+    "total_samples": 1200,
+    "train_samples": 960,
+    "test_samples": 240,
+    "test_size": 0.2,
+    "random_state": 42
+  },
+  "features": {
+    "numeric_features": [
+      "battery_capacity_kwh",
+      "starting_soc_percent",
+      "distance_km",
+      "trip_duration_minutes",
+      "average_speed_kmph",
+      "elevation_gain_m",
+      "traffic_density_score",
+      "ambient_temperature_c"
+    ],
+    "categorical_features": [
+      "vehicle_id",
+      "weather_condition",
+      "driving_style"
+    ],
+    "encoded_feature_count": 17,
+    "encoded_feature_names": [
+      "vehicle_id_VIRTUAL_EV_001",
+      "vehicle_id_VIRTUAL_EV_002",
+      "weather_condition_Clear",
+      "weather_condition_Hot",
+      "weather_condition_Overcast",
+      "weather_condition_Rain",
+      "driving_style_Aggressive",
+      "driving_style_Eco",
+      "driving_style_Normal",
+      "battery_capacity_kwh",
+      "starting_soc_percent",
+      "distance_km",
+      "trip_duration_minutes",
+      "average_speed_kmph",
+      "elevation_gain_m",
+      "traffic_density_score",
+      "ambient_temperature_c"
+    ],
+    "feature_importances": [
+      {
+        "Feature": "distance_km",
+        "Importance": 0.6598917245864868
+      },
+      {
+        "Feature": "trip_duration_minutes",
+        "Importance": 0.2791140377521515
+      },
+      {
+        "Feature": "elevation_gain_m",
+        "Importance": 0.014994986355304718
+      },
+      {
+        "Feature": "driving_style_Aggressive",
+        "Importance": 0.011389518156647682
+      },
+      {
+        "Feature": "average_speed_kmph",
+        "Importance": 0.007562723942101002
+      },
+      {
+        "Feature": "driving_style_Eco",
+        "Importance": 0.006689359433948994
+      },
+      {
+        "Feature": "driving_style_Normal",
+        "Importance": 0.006179051008075476
+      },
+      {
+        "Feature": "ambient_temperature_c",
+        "Importance": 0.005728779826313257
+      },
+      {
+        "Feature": "traffic_density_score",
+        "Importance": 0.005716606508940458
+      },
+      {
+        "Feature": "weather_condition_Hot",
+        "Importance": 0.0006569101824425161
+      },
+      {
+        "Feature": "battery_capacity_kwh",
+        "Importance": 0.0005853885668329895
+      },
+      {
+        "Feature": "starting_soc_percent",
+        "Importance": 0.0003527332446537912
+      },
+      {
+        "Feature": "weather_condition_Overcast",
+        "Importance": 0.0003285768034402281
+      },
+      {
+        "Feature": "weather_condition_Rain",
+        "Importance": 0.0002591335214674473
+      },
+      {
+        "Feature": "vehicle_id_VIRTUAL_EV_001",
+        "Importance": 0.0002579200081527233
+      },
+      {
+        "Feature": "vehicle_id_VIRTUAL_EV_002",
+        "Importance": 0.00023585457529406995
+      },
+      {
+        "Feature": "weather_condition_Clear",
+        "Importance": 5.668512676493265e-05
+      }
+    ]
+  },
+  "comparison_with_baseline": {
+    "linear_regression": {
+      "mae": 0.1862,
+      "rmse": 0.286,
+      "r2": 0.9914
+    },
+    "xgboost": {
+      "mae": 0.1302,
+      "rmse": 0.211,
+      "r2": 0.9953
+    }
+  },
+  "synthetic_data_disclosure": "Model trained and evaluated on synthetic Virtual EV trip data. Metrics reflect performance on simulated distribution and do not represent validated real-world physical EV measurements. Superior performance on synthetic benchmarks does not imply real-world validity."
+}

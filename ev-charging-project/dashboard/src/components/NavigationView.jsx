@@ -2,20 +2,21 @@ import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import axios from 'axios'
+import { useTelemetry } from '../telemetry/TelemetryContext'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 // ---------------------------------------------------------------------------
-// Custom Navigation DivIcons
+// Custom Cockpit Navigation DivIcons
 // ---------------------------------------------------------------------------
-const createLivePuckIcon = (heading = 0) =>
+const createLivePuckIcon = () =>
   L.divIcon({
     className: 'custom-live-puck-marker',
     html: `
       <div class="relative flex items-center justify-center">
-        <span class="animate-ping absolute inline-flex h-10 w-10 rounded-full bg-blue-400 opacity-60"></span>
-        <div class="relative w-8 h-8 rounded-full bg-blue-600 border-3 border-white shadow-2xl flex items-center justify-center text-white ring-4 ring-blue-500/30">
-          <div class="w-3 h-3 rounded-full bg-white shadow-sm"></div>
+        <span class="animate-ping absolute inline-flex h-10 w-10 rounded-full bg-cockpit-teal opacity-40"></span>
+        <div class="relative w-7 h-7 rounded-full bg-[#06080C] border-2 border-cockpit-teal flex items-center justify-center shadow-xl">
+          <div class="w-2.5 h-2.5 rounded-full bg-cockpit-teal"></div>
         </div>
       </div>
     `,
@@ -29,10 +30,10 @@ const createDestinationIcon = (powerKw) =>
     className: 'custom-dest-marker',
     html: `
       <div class="relative flex flex-col items-center">
-        <div class="w-9 h-9 rounded-xl bg-emerald-600 border-2 border-white shadow-xl flex items-center justify-center text-white text-sm font-black ring-4 ring-emerald-500/30">
+        <div class="w-8 h-8 rounded-full bg-[#0E131F] border-2 border-amber-400 flex items-center justify-center text-amber-400 text-xs font-bold shadow-xl">
           ⚡
         </div>
-        <div class="bg-slate-900 text-white font-bold text-[10px] px-1.5 py-0.5 rounded shadow mt-1 whitespace-nowrap border border-slate-700">
+        <div class="bg-[#06080C]/90 text-white font-mono text-[9px] px-1.5 py-0.5 rounded shadow mt-1 whitespace-nowrap border border-white/10">
           ${powerKw ? `${powerKw} kW` : 'Charger'}
         </div>
       </div>
@@ -96,10 +97,23 @@ export default function NavigationView({
   userLocation,
   onExit,
 }) {
+  const { updateTelemetry, resetTelemetry } = useTelemetry()
+
   const [routeData, setRouteData] = useState(null)
   const [routePoints, setRoutePoints] = useState([])
   const [isLoadingRoute, setIsLoadingRoute] = useState(true)
   const [routeError, setRouteError] = useState(null)
+
+  // Calculate simulated driving speed (km/h) reflecting route movement
+  const simulatedSpeed = useMemo(() => {
+    const dist = routeData?.distance_km ?? charger?.distance_km
+    const timeMin = routeData?.travel_time_minutes ?? charger?.travel_time_minutes
+    if (dist && timeMin && timeMin > 0) {
+      const spd = Math.round(dist / (timeMin / 60))
+      return spd > 0 ? spd : 45.0
+    }
+    return 45.0
+  }, [routeData, charger])
 
   // Live Location State
   const userLat = userLocation?.lat ?? 12.2958
@@ -107,16 +121,22 @@ export default function NavigationView({
   const initialPos = useMemo(() => [userLat, userLon], [userLat, userLon])
 
   const [livePosition, setLivePosition] = useState(initialPos)
-  const [gpsStatus, setGpsStatus] = useState('initializing') // initializing, live, denied, fallback, simulated
+  const [gpsStatus, setGpsStatus] = useState('initializing')
   const [gpsAccuracy, setGpsAccuracy] = useState(null)
   const [isFollowing, setIsFollowing] = useState(true)
 
-  // Simulation Mode State (interpolates smoothly along the route)
+  // Simulation Mode State
   const [isSimulating, setIsSimulating] = useState(false)
-  const simulationProgressRef = useRef(0.0) // 0.0 to 1.0 along the polyline
+  const simulationProgressRef = useRef(0.0)
+  const lastSimulationProgressRef = useRef(0.0)
   const simulationTimerRef = useRef(null)
 
-  // 1. Fetch Static Route on Mount (Runs strictly ONCE per navigation session)
+  const totalDistanceKm = useMemo(() => {
+    const dist = routeData?.distance_km ?? charger?.distance_km
+    return typeof dist === 'number' && dist > 0 ? dist : 5.0
+  }, [routeData, charger])
+
+  // 1. Fetch Static Route on Mount
   useEffect(() => {
     let isMounted = true
     setIsLoadingRoute(true)
@@ -137,12 +157,10 @@ export default function NavigationView({
 
         setRouteData(res.data)
 
-        // Convert GeoJSON LineString coordinates [[lon, lat], ...] to Leaflet [[lat, lon], ...]
         if (res.data?.geometry?.coordinates) {
           const latLngs = res.data.geometry.coordinates.map(([lon, lat]) => [lat, lon])
           setRoutePoints(latLngs)
         } else {
-          // Fallback straight line
           setRoutePoints([[userLat, userLon], [charger.latitude, charger.longitude]])
         }
       } catch (err) {
@@ -162,10 +180,10 @@ export default function NavigationView({
     }
   }, [charger?.charger_id, userLat, userLon])
 
-  // 2. Continuous Geolocation Watcher (navigator.geolocation.watchPosition)
+  // 2. Continuous Geolocation Watcher
   useEffect(() => {
     if (isSimulating) {
-      return // Hardware GPS paused while user tests simulation mode
+      return
     }
 
     if (!('geolocation' in navigator)) {
@@ -185,7 +203,7 @@ export default function NavigationView({
           setGpsStatus('live')
         },
         (err) => {
-          console.warn('Geolocation watch error / permission denied:', err.message)
+          console.warn('Geolocation error / permission denied:', err.message)
           if (err.code === 1) {
             setGpsStatus('denied')
           } else {
@@ -210,8 +228,7 @@ export default function NavigationView({
     }
   }, [isSimulating])
 
-  // 3. Movement Simulation Engine (Smooth Interpolation along Road Geometry)
-  // Completes a full route traversal in ~8.0 seconds at 60 Hz / 100ms ticks
+  // 3. Movement Simulation Engine
   useEffect(() => {
     if (!isSimulating || routePoints.length === 0) {
       if (simulationTimerRef.current) {
@@ -222,18 +239,52 @@ export default function NavigationView({
     }
 
     setGpsStatus('simulated')
-    const TICK_MS = 100 // 10 ticks per second for smooth visual animation
-    const TOTAL_DURATION_MS = 8000 // 8.0 seconds total trip preview
-    const STEP_PROGRESS = TICK_MS / TOTAL_DURATION_MS // ~0.0125 per tick
+    const TICK_MS = 100
+    const TOTAL_DURATION_MS = 8000
+    const STEP_PROGRESS = TICK_MS / TOTAL_DURATION_MS
+
+    lastSimulationProgressRef.current = simulationProgressRef.current
+    updateTelemetry({
+      vehicle_status: 'Driving',
+      speed_kmph: simulatedSpeed,
+    })
 
     simulationTimerRef.current = setInterval(() => {
       simulationProgressRef.current += STEP_PROGRESS
+      const maxIdx = routePoints.length - 1
+
       if (simulationProgressRef.current >= 1.0) {
-        simulationProgressRef.current = 0.0 // Loop smoothly back to start
+        simulationProgressRef.current = 1.0
+        const progressDelta = Math.max(0, 1.0 - lastSimulationProgressRef.current)
+        lastSimulationProgressRef.current = 1.0
+        const incrementalDist = progressDelta * totalDistanceKm
+
+        const destPoint = routePoints[maxIdx]
+        const destLat = destPoint[0]
+        const destLon = destPoint[1]
+
+        setLivePosition([destLat, destLon])
+        setIsSimulating(false)
+        if (simulationTimerRef.current) {
+          clearInterval(simulationTimerRef.current)
+          simulationTimerRef.current = null
+        }
+
+        updateTelemetry({
+          latitude: destLat,
+          longitude: destLon,
+          speed_kmph: 0.0,
+          vehicle_status: 'Destination Reached',
+          incremental_distance_km: incrementalDist,
+        })
+        return
       }
 
       const p = simulationProgressRef.current
-      const maxIdx = routePoints.length - 1
+      const progressDelta = Math.max(0, p - lastSimulationProgressRef.current)
+      lastSimulationProgressRef.current = p
+      const incrementalDist = progressDelta * totalDistanceKm
+
       const exactIdx = p * maxIdx
       const i = Math.floor(exactIdx)
       const frac = exactIdx - i
@@ -250,6 +301,13 @@ export default function NavigationView({
       }
 
       setLivePosition([interpolatedLat, interpolatedLon])
+      updateTelemetry({
+        latitude: interpolatedLat,
+        longitude: interpolatedLon,
+        speed_kmph: simulatedSpeed,
+        vehicle_status: 'Driving',
+        incremental_distance_km: incrementalDist,
+      })
     }, TICK_MS)
 
     return () => {
@@ -257,16 +315,48 @@ export default function NavigationView({
         clearInterval(simulationTimerRef.current)
       }
     }
-  }, [isSimulating, routePoints])
+  }, [isSimulating, routePoints, simulatedSpeed, totalDistanceKm, updateTelemetry])
+
+  useEffect(() => {
+    return () => {
+      updateTelemetry({
+        speed_kmph: 0.0,
+      })
+    }
+  }, [updateTelemetry])
 
   const toggleSimulation = () => {
     if (!isSimulating) {
+      if (simulationProgressRef.current >= 1.0) {
+        simulationProgressRef.current = 0.0
+        lastSimulationProgressRef.current = 0.0
+      } else {
+        lastSimulationProgressRef.current = simulationProgressRef.current
+      }
       setIsSimulating(true)
       setIsFollowing(true)
     } else {
       setIsSimulating(false)
-      // When pausing simulation, restore hardware GPS status
-      setGpsStatus('initializing')
+      setGpsStatus('fallback')
+      updateTelemetry({
+        speed_kmph: 0.0,
+        vehicle_status: 'Paused',
+      })
+    }
+  }
+
+  const handleResetSimulation = () => {
+    setIsSimulating(false)
+    if (simulationTimerRef.current) {
+      clearInterval(simulationTimerRef.current)
+      simulationTimerRef.current = null
+    }
+    simulationProgressRef.current = 0.0
+    lastSimulationProgressRef.current = 0.0
+    setGpsStatus('fallback')
+    resetTelemetry()
+    if (routePoints && routePoints.length > 0) {
+      setLivePosition(routePoints[0])
     }
   }
 
@@ -279,105 +369,88 @@ export default function NavigationView({
   const timeDisplay = routeData?.travel_time_minutes ?? charger.travel_time_minutes
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900 flex flex-col font-sans overflow-hidden">
-      {/* Top Floating Navigation HUD */}
-      <header className="absolute top-4 left-4 right-4 z-[1000] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pointer-events-none">
-        {/* Destination Card & Back Button */}
-        <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl p-4 text-white flex items-center gap-4 max-w-xl w-full pointer-events-auto">
+    <div className="fixed inset-0 z-50 bg-[#06080C] flex flex-col font-sans overflow-hidden">
+      {/* Top Floating Seamless HUD */}
+      <header className="absolute top-5 left-5 right-5 z-[1000] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pointer-events-none">
+        {/* Destination Card & Exit Button */}
+        <div className="seamless-glass rounded-2xl p-4 text-white flex items-center gap-4 max-w-xl w-full pointer-events-auto shadow-2xl">
           <button
             onClick={onExit}
-            className="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center text-lg font-bold text-slate-200 border border-slate-600 shrink-0"
+            className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 transition flex items-center justify-center text-sm font-light text-white shrink-0 cursor-pointer"
             title="Exit Navigation"
           >
             ✕
           </button>
 
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-500/40 uppercase">
-                Navigating
-              </span>
-              <span className="text-xs text-slate-400 truncate">
-                {charger.operator ? `${charger.operator} • ` : ''}{charger.city || 'Mysuru'}
-              </span>
-            </div>
-            <h1 className="text-base sm:text-lg font-black text-white truncate mt-0.5">
+            <span className="text-[10px] text-amber-400 uppercase tracking-widest font-medium block">
+              Navigating To
+            </span>
+            <h1 className="text-base sm:text-lg font-light text-white tracking-tight truncate">
               {charger.name}
             </h1>
-            <p className="text-xs text-slate-400 truncate">{charger.address || 'Karnataka, India'}</p>
+            <p className="text-[11px] text-slate-400 truncate">
+              {charger.address || charger.city || 'Mysuru'}
+            </p>
           </div>
 
-          <div className="text-right shrink-0 bg-slate-800/80 px-3 py-2 rounded-xl border border-slate-700">
-            <div className="text-lg font-black text-emerald-400 leading-none">
-              {distDisplay} <span className="text-xs font-semibold text-slate-300">km</span>
+          <div className="text-right shrink-0">
+            <div className="text-xl font-light font-mono tabular-nums text-white leading-none">
+              {distDisplay} <span className="text-xs text-slate-400">km</span>
             </div>
-            <div className="text-[11px] font-medium text-slate-400 mt-1">
-              ~{timeDisplay} min drive
+            <div className="text-[11px] font-mono text-slate-400 mt-1">
+              ~{timeDisplay} min
             </div>
           </div>
         </div>
 
-        {/* GPS Status & Simulation Controller Pill */}
-        <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl px-4 py-2.5 flex items-center gap-3 text-xs text-slate-200 pointer-events-auto">
+        {/* Status & Controller Controls */}
+        <div className="seamless-glass rounded-2xl px-4 py-2 flex items-center gap-3 text-xs text-slate-200 pointer-events-auto shadow-2xl">
           <div className="flex items-center gap-2">
             <span
-              className={`w-2.5 h-2.5 rounded-full ${
+              className={`w-2 h-2 rounded-full ${
                 gpsStatus === 'live'
-                  ? 'bg-emerald-400 animate-pulse'
+                  ? 'bg-cockpit-teal animate-pulse'
                   : gpsStatus === 'simulated'
-                  ? 'bg-indigo-400 animate-pulse'
-                  : gpsStatus === 'denied'
-                  ? 'bg-amber-400'
-                  : 'bg-blue-400'
+                  ? 'bg-blue-400 animate-pulse'
+                  : 'bg-amber-400'
               }`}
             ></span>
-            <span className="font-semibold capitalize text-slate-300">
-              {gpsStatus === 'live'
-                ? `GPS Active (±${gpsAccuracy}m)`
-                : gpsStatus === 'simulated'
-                ? 'Simulation Mode'
-                : gpsStatus === 'denied'
-                ? 'GPS Denied (Fixed Point)'
-                : 'Tracking Initial Pos'}
+            <span className="text-[11px] text-slate-300 font-mono">
+              {gpsStatus === 'simulated' ? 'Simulating' : 'Active'}
             </span>
           </div>
 
-          <div className="h-4 w-px bg-slate-700"></div>
+          <div className="h-4 w-px bg-white/10"></div>
 
           <button
             onClick={toggleSimulation}
-            className={`px-3 py-1 rounded-lg font-bold text-xs transition-all ${
-              isSimulating
-                ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/40'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600'
-            }`}
+            className="btn-primary px-3 py-1 text-xs cursor-pointer"
           >
-            {isSimulating ? '⏸ Pause Demo' : '▶ Simulate Drive'}
+            {isSimulating ? 'Pause' : simulationProgressRef.current >= 1.0 ? 'Replay' : 'Drive'}
+          </button>
+
+          <button
+            onClick={handleResetSimulation}
+            className="text-xs text-slate-400 hover:text-white transition cursor-pointer"
+            title="Reset to origin"
+          >
+            Reset
           </button>
         </div>
       </header>
 
-      {/* Permission Warning Banner if GPS Denied */}
-      {gpsStatus === 'denied' && (
-        <div className="absolute top-24 left-4 right-4 z-[999] max-w-md mx-auto bg-amber-900/90 border border-amber-600 text-amber-100 text-xs px-4 py-2.5 rounded-xl shadow-xl flex items-center justify-between gap-3">
-          <span>
-            📍 <strong>Location access was denied.</strong> Navigation is using your initial search position. Use <strong>Simulate Drive</strong> to test live motion.
-          </span>
-        </div>
-      )}
-
-      {/* Main Full-Screen Map Container */}
-      <div className="flex-1 w-full h-full relative z-0">
+      {/* Main Environmental Map */}
+      <div className="flex-1 w-full h-full relative z-0 bg-[#06080C]">
         <MapContainer
           center={livePosition}
           zoom={15}
           scrollWheelZoom={true}
-          className="h-full w-full"
+          className="h-full w-full bg-[#06080C]"
         >
-          {/* Tile layer */}
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           />
 
           <NavigationMapController
@@ -387,26 +460,24 @@ export default function NavigationView({
             onUserDrag={() => setIsFollowing(false)}
           />
 
-          {/* Static Route Polyline (Glow casing + solid blue core) */}
+          {/* Navigation Route Polyline */}
           {routePoints.length > 0 && (
             <>
-              {/* Dark Outline / Casing */}
               <Polyline
                 positions={routePoints}
                 pathOptions={{
-                  color: '#1e3a8a',
+                  color: '#00D2B4',
                   weight: 8,
-                  opacity: 0.6,
+                  opacity: 0.25,
                   lineCap: 'round',
                   lineJoin: 'round',
                 }}
               />
-              {/* Vibrant Navigation Route Core */}
               <Polyline
                 positions={routePoints}
                 pathOptions={{
-                  color: '#3b82f6',
-                  weight: 5,
+                  color: '#00D2B4',
+                  weight: 3.5,
                   opacity: 0.95,
                   lineCap: 'round',
                   lineJoin: 'round',
@@ -415,14 +486,14 @@ export default function NavigationView({
             </>
           )}
 
-          {/* Moving Live Location Puck Marker */}
+          {/* Moving Live Location Puck */}
           {livePosition && (
             <Marker position={livePosition} icon={createLivePuckIcon()} zIndexOffset={3000}>
               <Popup>
                 <div className="text-xs p-1">
-                  <strong className="block text-blue-700 font-bold">📍 Your Live Position</strong>
-                  <span className="text-gray-500">
-                    {livePosition[0]?.toFixed(5)}, {livePosition[1]?.toFixed(5)}
+                  <strong className="block text-white font-medium">Vehicle Position</strong>
+                  <span className="text-slate-400 font-mono tabular-nums">
+                    {livePosition[0]?.toFixed(4)}°N, {livePosition[1]?.toFixed(4)}°E
                   </span>
                 </div>
               </Popup>
@@ -433,13 +504,9 @@ export default function NavigationView({
           {destCoords && (
             <Marker position={destCoords} icon={createDestinationIcon(charger.charging_power_kw)} zIndexOffset={2000}>
               <Popup>
-                <div className="text-xs p-1">
-                  <strong className="block text-emerald-800 font-bold text-sm">{charger.name}</strong>
-                  <p className="text-gray-600 mt-0.5">{charger.address || charger.city}</p>
-                  <div className="mt-1 pt-1 border-t border-gray-100 flex items-center justify-between">
-                    <span className="font-semibold text-emerald-700">{charger.charging_power_kw} kW</span>
-                    <span className="text-gray-500">🔌 {charger.connector_type}</span>
-                  </div>
+                <div className="text-xs p-1 min-w-[140px]">
+                  <strong className="block text-white font-medium">{charger.name}</strong>
+                  <p className="text-slate-400 text-[11px] mt-0.5">{charger.charging_power_kw} kW · {charger.connector_type}</p>
                 </div>
               </Popup>
             </Marker>
@@ -448,29 +515,23 @@ export default function NavigationView({
       </div>
 
       {/* Floating Bottom Control Bar */}
-      <footer className="absolute bottom-6 left-4 right-4 z-[1000] flex items-center justify-between pointer-events-none">
-        <div className="pointer-events-auto flex items-center gap-2">
+      <footer className="absolute bottom-6 left-5 right-5 z-[1000] flex items-center justify-between pointer-events-none">
+        <div className="pointer-events-auto">
           {!isFollowing && (
             <button
               onClick={handleRecenter}
-              className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-2xl transition-all active:scale-95 flex items-center gap-2 border border-blue-400 ring-4 ring-blue-500/20"
+              className="seamless-glass hover:bg-white/10 text-white text-xs px-4 py-2 rounded-full shadow-2xl transition cursor-pointer"
             >
-              <span>🎯</span> Recenter Map
+              Recenter Guidance
             </button>
           )}
         </div>
 
-        <div className="pointer-events-auto bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl shadow-2xl p-3 flex items-center gap-3 text-xs text-slate-300">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span className="font-medium text-slate-200">
-              {routeData?.is_fallback ? 'Direct Road Route' : 'OSRM Live Routing'}
-            </span>
-          </div>
-
+        <div className="pointer-events-auto seamless-glass rounded-full px-4 py-2 flex items-center gap-3 text-xs text-slate-300 shadow-2xl">
+          <span className="text-[11px] text-slate-400">OSRM Road Corridor</span>
           <button
             onClick={onExit}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-3 py-1.5 rounded-xl border border-slate-600 active:scale-95 transition-all"
+            className="text-xs text-white hover:text-slate-300 font-medium cursor-pointer"
           >
             Exit Navigation
           </button>
