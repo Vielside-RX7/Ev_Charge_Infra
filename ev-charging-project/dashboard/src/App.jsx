@@ -52,8 +52,8 @@ function CockpitContent({
           {/* Section 2: Journey Corridor & Active Navigation Cockpit */}
           <ActiveTripCard />
 
-          {/* Section 3: Charging Discovery (Suppressed during active driving) */}
-          {!isDrivingActive && (
+          {/* Section 3: Charging Discovery (Suppressed during active driving or when destination journey is active) */}
+          {!isDrivingActive && !trip.destination_selected && (
             <section className="pt-2">
               <RecommendationForm onSubmit={handleFormSubmit} isLoading={isLoading} />
               <ResultsList

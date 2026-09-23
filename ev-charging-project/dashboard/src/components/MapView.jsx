@@ -107,18 +107,58 @@ function MapController({
   markerRefs,
   journeyPlan,
   tripRoutePoints,
+  destination,
 }) {
   const map = useMap()
 
   useEffect(() => {
-    // 1. If journey plan with charging stop exists, fit all waypoints
-    if (journeyPlan && journeyPlan.fullPolylinePoints && journeyPlan.fullPolylinePoints.length > 0) {
-      const bounds = L.latLngBounds(journeyPlan.fullPolylinePoints)
-      map.fitBounds(bounds, { padding: [70, 70], maxZoom: 14 })
+    // 1. If journey plan exists, fit all waypoints (origin, destination, all charging stops) and complete route geometry
+    if (journeyPlan) {
+      const points = []
+      if (userLocation?.lat && userLocation?.lon) {
+        points.push([userLocation.lat, userLocation.lon])
+      }
+      if (destination?.latitude && destination?.longitude) {
+        points.push([destination.latitude, destination.longitude])
+      }
+      if (Array.isArray(journeyPlan.chargingStops)) {
+        journeyPlan.chargingStops.forEach((stop) => {
+          if (stop.latitude && stop.longitude) {
+            points.push([stop.latitude, stop.longitude])
+          }
+        })
+      }
+      if (journeyPlan.selectedCharger?.latitude && journeyPlan.selectedCharger?.longitude) {
+        points.push([journeyPlan.selectedCharger.latitude, journeyPlan.selectedCharger.longitude])
+      }
+      if (journeyPlan.fullPolylinePoints && journeyPlan.fullPolylinePoints.length > 0) {
+        journeyPlan.fullPolylinePoints.forEach((pt) => points.push(pt))
+      }
+
+      if (points.length > 0) {
+        const bounds = L.latLngBounds(points)
+        map.fitBounds(bounds, { padding: [70, 70], maxZoom: 14 })
+        return
+      }
+    }
+
+    // 2. If destination is selected (even before journey plan is computed), focus map
+    if (destination?.latitude && destination?.longitude) {
+      const points = []
+      if (userLocation?.lat && userLocation?.lon) {
+        points.push([userLocation.lat, userLocation.lon])
+      }
+      points.push([destination.latitude, destination.longitude])
+      if (points.length === 1) {
+        map.flyTo([destination.latitude, destination.longitude], 13, { animate: true, duration: 0.6 })
+      } else {
+        const bounds = L.latLngBounds(points)
+        map.fitBounds(bounds, { padding: [80, 80], maxZoom: 13 })
+      }
       return
     }
 
-    // 2. Otherwise if charger search results exist, fit charger results
+    // 3. Otherwise if charger search results exist, fit charger results
     if (results && results.length > 0) {
       const points = []
       if (userLocation?.lat && userLocation?.lon) {
@@ -138,12 +178,12 @@ function MapController({
       return
     }
 
-    // 3. Otherwise if direct trip route exists, fit bounds to the road route
+    // 4. Otherwise if direct trip route exists, fit bounds to the road route
     if (tripRoutePoints && tripRoutePoints.length > 0) {
       const bounds = L.latLngBounds(tripRoutePoints)
       map.fitBounds(bounds, { padding: [70, 70], maxZoom: 14 })
     }
-  }, [journeyPlan, results, userLocation, tripRoutePoints, map])
+  }, [journeyPlan, results, userLocation, tripRoutePoints, destination, map])
 
   // Pan and open popup when a charger is selected
   useEffect(() => {
@@ -174,12 +214,14 @@ export default function MapView({
 }) {
   const {
     trip,
+    destination,
     isSelectingDestination,
     setDestination,
     clearDestination,
     journeyPlan,
     navState,
     currentLeg,
+    currentLegIndex = 0,
     NAV_STATE,
   } = useTrip()
 
@@ -195,10 +237,20 @@ export default function MapView({
 
   const isChargeJourney = journeyPlan?.decisionType === 'CHARGE'
   const isDirectJourney = journeyPlan?.decisionType === 'DIRECT'
-  const leg1Points = isChargeJourney ? journeyPlan.legs?.originToCharger?.polylinePoints : null
-  const leg2Points = isChargeJourney ? journeyPlan.legs?.chargerToDestination?.polylinePoints : null
+
+  // Multi-stop: prefer the concatenated fullPolylinePoints for the whole route
+  const isMultiStop = isChargeJourney && Array.isArray(journeyPlan?.chargingStops) && journeyPlan.chargingStops.length > 0
+  const multiStopPolyline = journeyPlan?.fullPolylinePoints
+  const multiStopLegs = journeyPlan?.multiStopLegs || []
+
+  // Legacy single-stop leg geometry
+  const leg1Points = isChargeJourney && !isMultiStop ? journeyPlan.legs?.originToCharger?.polylinePoints : null
+  const leg2Points = isChargeJourney && !isMultiStop ? journeyPlan.legs?.chargerToDestination?.polylinePoints : null
   const directPlanPoints = isDirectJourney ? journeyPlan.legs?.direct?.polylinePoints : null
   const fallbackPoints = trip?.route?.polylinePoints
+
+  // Charging stops array for multi-stop marker rendering
+  const chargingStopsForMap = journeyPlan?.chargingStops || []
 
   const isNavigating =
     navState === NAV_STATE.DRIVING ||
@@ -215,18 +267,22 @@ export default function MapView({
           <span className={`w-2 h-2 rounded-full ${isNavigating ? 'bg-cockpit-teal animate-pulse' : 'bg-cockpit-teal'}`}></span>
           <span className="text-slate-200 font-medium text-[11px] tracking-tight">
             {navState === NAV_STATE.CHARGING
-              ? `Fast Charging: ${journeyPlan?.selectedCharger?.name || 'Station'}`
-              : navState === NAV_STATE.DRIVING_LEG_1
-              ? 'En Route · Leg 1 to Charger'
-              : navState === NAV_STATE.DRIVING_LEG_2
-              ? 'En Route · Leg 2 to Destination'
+              ? `⚡ Charging: ${journeyPlan?.chargingStops?.[currentLegIndex - 1]?.chargerName || journeyPlan?.selectedCharger?.name || 'Station'}`
+              : navState === NAV_STATE.DRIVING_LEG_1 || navState === NAV_STATE.DRIVING_LEG_2
+              ? isMultiStop
+                ? `En Route · Leg ${currentLegIndex + 1} of ${multiStopLegs.length}`
+                : navState === NAV_STATE.DRIVING_LEG_1
+                ? 'En Route · Leg 1 to Charger'
+                : 'En Route · Leg 2 to Destination'
               : navState === NAV_STATE.DRIVING
               ? 'En Route · Direct Corridor'
+              : isMultiStop
+              ? `${chargingStopsForMap.length}-Stop Charging Corridor`
               : isChargeJourney
-              ? 'Multi-Leg Charging Corridor'
+              ? 'Charging Stop Corridor'
               : isDirectJourney
               ? 'Direct Journey Corridor'
-              : 'Mysuru Environmental Canvas'}
+              : 'VoltGuide Map Canvas'}
           </span>
         </div>
 
@@ -253,10 +309,11 @@ export default function MapView({
           scrollWheelZoom={false}
           className="h-full w-full z-0 bg-[#05070A]"
         >
-          {/* CartoDB Dark Matter Automotive Tiles */}
+          {/* OpenStreetMap Dark Automotive Tiles */}
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            className="dark-tile-layer"
           />
 
           <MapClickHandler
@@ -271,10 +328,39 @@ export default function MapView({
             markerRefs={markerRefs}
             journeyPlan={journeyPlan}
             tripRoutePoints={fallbackPoints}
+            destination={destination}
           />
 
-          {/* Render Route Polylines: CHARGE Journey (Leg 1 and Leg 2) */}
-          {isChargeJourney && leg1Points && leg1Points.length > 0 && (
+          {/* Render Route Polylines: CHARGE Journey */}
+          {/* Multi-Stop: render combined full-route polyline */}
+          {isMultiStop && multiStopPolyline && multiStopPolyline.length > 0 && (
+            <>
+              <Polyline
+                positions={multiStopPolyline}
+                pathOptions={{
+                  color: '#00D2B4',
+                  weight: 6,
+                  opacity: 0.15,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+              <Polyline
+                positions={multiStopPolyline}
+                pathOptions={{
+                  color: '#00D2B4',
+                  weight: 3,
+                  opacity: 0.90,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  dashArray: null,
+                }}
+              />
+            </>
+          )}
+
+          {/* Legacy single-stop: render Leg 1 and Leg 2 separately */}
+          {isChargeJourney && !isMultiStop && leg1Points && leg1Points.length > 0 && (
             <>
               <Polyline
                 positions={leg1Points}
@@ -299,7 +385,7 @@ export default function MapView({
             </>
           )}
 
-          {isChargeJourney && leg2Points && leg2Points.length > 0 && (
+          {isChargeJourney && !isMultiStop && leg2Points && leg2Points.length > 0 && (
             <>
               <Polyline
                 positions={leg2Points}
@@ -378,11 +464,16 @@ export default function MapView({
               zIndexOffset={1900}
             >
               <Popup>
-                <div className="text-xs p-2 min-w-[150px]">
-                  <strong className="block text-white text-xs font-medium mb-1">
-                    Destination Waypoint
+                <div className="text-xs p-2 min-w-[170px] space-y-1">
+                  <strong className="block text-white text-xs font-medium">
+                    {trip.destination_name || 'Destination Waypoint'}
                   </strong>
-                  <div className="font-mono tabular-nums text-slate-400 text-[11px]">
+                  {trip.destination_address && (
+                    <div className="text-[10px] text-slate-300 leading-tight">
+                      {trip.destination_address}
+                    </div>
+                  )}
+                  <div className="font-mono tabular-nums text-slate-400 text-[10px]">
                     {trip.destination_latitude.toFixed(4)}°N, {trip.destination_longitude.toFixed(4)}°E
                   </div>
                   <button
@@ -400,8 +491,40 @@ export default function MapView({
             </Marker>
           )}
 
-          {/* Selected Charger as Waypoint from /trip/plan */}
-          {isChargeJourney && journeyPlan.selectedCharger && (
+          {/* Multi-Stop Charging Waypoints: numbered ⚡ markers for each stop */}
+          {isMultiStop && chargingStopsForMap.map((stop, idx) => (
+            stop.latitude && stop.longitude ? (
+              <Marker
+                key={`multistop-${stop.chargerId}-${idx}`}
+                position={[stop.latitude, stop.longitude]}
+                icon={createWaypointChargerIcon(stop.chargingPowerKw)}
+                zIndexOffset={2500 + idx * 10}
+              >
+                <Popup>
+                  <div className="text-xs p-2 max-w-[240px] space-y-1.5">
+                    <div>
+                      <span className="label-subhead text-amber-400 block mb-0.5">
+                        Stop {idx + 1} of {chargingStopsForMap.length}
+                      </span>
+                      <strong className="block text-white text-sm font-light tracking-tight">
+                        {stop.chargerName}
+                      </strong>
+                    </div>
+                    <div className="text-slate-300 text-[11px] font-mono tabular-nums space-y-0.5 pt-1 border-t border-white/10">
+                      <div>Power: <strong className="text-amber-300">{stop.chargingPowerKw} kW</strong></div>
+                      <div>Wait: <strong>{Math.round(stop.waitMinutes)} min</strong></div>
+                      <div>Charge Duration: <strong>{Math.round(stop.chargingDurationMinutes)} min</strong></div>
+                      <div>Energy Added: <strong className="text-emerald-400">+{stop.energyAddedKwh.toFixed(1)} kWh</strong></div>
+                      <div>Reliability: <strong className="text-emerald-400">{(stop.reliability * 100).toFixed(0)}%</strong></div>
+                    </div>
+                  </div>
+                </Popup>
+              </Marker>
+            ) : null
+          ))}
+
+          {/* Legacy: Single-Stop Waypoint from /trip/plan (non-multi-stop CHARGE mode) */}
+          {isChargeJourney && !isMultiStop && journeyPlan.selectedCharger && (
             <Marker
               position={[
                 journeyPlan.selectedCharger.latitude,
@@ -423,9 +546,9 @@ export default function MapView({
 
                   <div className="text-slate-300 text-[11px] font-mono tabular-nums space-y-0.5 pt-1 border-t border-white/10">
                     <div>Power: <strong className="text-amber-300">{journeyPlan.selectedCharger.powerKw} kW</strong></div>
-                    <div>Wait: <strong>{journeyPlan.routeMetrics.chargingWaitMinutes} min</strong></div>
-                    <div>Charge Duration: <strong>{journeyPlan.routeMetrics.chargingDurationMinutes} min</strong></div>
-                    <div>Energy Added: <strong className="text-emerald-400">+{journeyPlan.energyAccounting.energyAddedKwh.toFixed(1)} kWh</strong></div>
+                    <div>Wait: <strong>{journeyPlan.routeMetrics?.chargingWaitMinutes} min</strong></div>
+                    <div>Charge Duration: <strong>{journeyPlan.routeMetrics?.chargingDurationMinutes} min</strong></div>
+                    <div>Energy Added: <strong className="text-emerald-400">+{journeyPlan.energyAccounting?.energyAddedKwh?.toFixed(1)} kWh</strong></div>
                   </div>
                 </div>
               </Popup>

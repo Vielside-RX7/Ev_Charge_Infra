@@ -3,6 +3,7 @@ import { useTrip } from '../trip/TripContext'
 import { useTelemetry } from '../telemetry/TelemetryContext'
 import { tripRecorder } from '../trip/tripRecorder'
 import { fetchTripEnergyPrediction, fetchNearTermEnergyPrediction } from '../trip/energyPredictionService'
+import DestinationSearch from './DestinationSearch'
 
 export default function ActiveTripCard() {
   const {
@@ -10,6 +11,7 @@ export default function ActiveTripCard() {
     isSelectingDestination,
     startSelectingDestination,
     cancelSelectingDestination,
+    setDestination,
     clearDestination,
     journeyPlan,
     isPlanning,
@@ -17,6 +19,8 @@ export default function ActiveTripCard() {
     planJourneyAction,
     navState,
     currentLeg,
+    currentLegIndex,
+    activeChargingStop,
     legProgressPercent,
     overallTripProgressPercent,
     simulatedChargingProgress,
@@ -126,48 +130,32 @@ export default function ActiveTripCard() {
     navState === NAV_STATE.CHARGING ||
     navState === NAV_STATE.PAUSED
 
+  // Multi-stop plan details
+  const isMultiStopJourney = Array.isArray(journeyPlan?.chargingStops) && journeyPlan.chargingStops.length > 0
+  const stopCount = journeyPlan?.chargingStopCount || 0
+
+  // Current driving leg label for multi-stop journeys
+  const multiLegs = journeyPlan?.multiStopLegs || []
+  const totalLegs = multiLegs.length
+  const isLastLeg = currentLegIndex === totalLegs - 1
+
   // -------------------------------------------------------------------------
-  // STATE 1: IDLE / NO DESTINATION SELECTED (Spacious Landing Experience)
+  // STATE 1: IDLE / NO DESTINATION SELECTED
   // -------------------------------------------------------------------------
   if (!trip.destination_selected) {
     return (
-      <section className="py-8 space-y-4">
-        <div className="space-y-1.5">
-          <span className="label-subhead block">Journey Planning</span>
-          <h2 className="display-metric text-white font-light">
-            Where would you like to go?
-          </h2>
-          <p className="label-quiet text-slate-400 max-w-md">
-            Select any destination on the regional road network to evaluate physical reachability, energy expenditure, and required charging stops.
-          </p>
-        </div>
-
-        <div className="pt-2">
-          {isSelectingDestination ? (
-            <div className="flex items-center gap-4">
-              <div className="px-5 py-3 rounded-full bg-amber-400/10 border border-amber-400/20 text-amber-300 text-xs font-medium flex items-center gap-2.5 animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span>Click anywhere on the map to set destination waypoint</span>
-              </div>
-              <button
-                type="button"
-                onClick={cancelSelectingDestination}
-                className="btn-secondary px-5 py-2.5 text-xs cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={startSelectingDestination}
-              className="btn-primary px-7 py-3 text-xs flex items-center gap-2 cursor-pointer shadow-lg shadow-teal-500/10"
-            >
-              <span>Choose Destination on Map</span>
-              <span className="text-sm font-normal">→</span>
-            </button>
-          )}
-        </div>
+      <section className="py-6 space-y-4">
+        <DestinationSearch
+          onDestinationSelect={(place) => setDestination(place)}
+          onFallbackToMap={() => {
+            if (isSelectingDestination) {
+              cancelSelectingDestination()
+            } else {
+              startSelectingDestination()
+            }
+          }}
+          isSelectingOnMap={isSelectingDestination}
+        />
       </section>
     )
   }
@@ -176,16 +164,20 @@ export default function ActiveTripCard() {
   // STATE 2: ACTIVE CHARGING SIMULATION STATE
   // -------------------------------------------------------------------------
   if (navState === NAV_STATE.CHARGING) {
-    const chargerPower = journeyPlan?.selectedCharger?.powerKw || 50
-    const plannedEnergy = journeyPlan?.energyAccounting?.energyAddedKwh || 0
-    const durationMin = journeyPlan?.routeMetrics?.chargingDurationMinutes || 20
+    const chargingStop = activeChargingStop || (journeyPlan?.chargingStops?.[0])
+    const chargerPower = chargingStop?.chargingPowerKw || journeyPlan?.selectedCharger?.powerKw || 50
+    const plannedEnergy = chargingStop?.energyAddedKwh || journeyPlan?.energyAccounting?.energyAddedKwh || 0
+    const durationMin = chargingStop?.chargingDurationMinutes || journeyPlan?.routeMetrics?.chargingDurationMinutes || 20
+    const chargerName = chargingStop?.chargerName || journeyPlan?.selectedCharger?.name || 'Fast Charger'
+    const stopIdx = (chargingStop?.stopIndex ?? 0) + 1
+    const totalStops = stopCount || 1
 
     return (
       <section className="py-6 space-y-6">
         <div className="flex items-center justify-between">
           <span className="label-subhead text-amber-400 flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
-            Simulated Fast Charging
+            {totalStops > 1 ? `Charging Stop ${stopIdx} of ${totalStops}` : 'Simulated Fast Charging'}
           </span>
           <button
             type="button"
@@ -198,7 +190,7 @@ export default function ActiveTripCard() {
 
         <div className="space-y-2">
           <h2 className="display-metric text-white font-light">
-            {journeyPlan?.selectedCharger?.name || 'Fast Charger'}
+            {chargerName}
           </h2>
           <p className="label-quiet text-amber-300/90 font-mono">
             {chargerPower} kW DC Fast Charge · Planned +{plannedEnergy.toFixed(1)} kWh transfer
@@ -234,7 +226,7 @@ export default function ActiveTripCard() {
           </div>
         </div>
 
-        {/* Seamless Charging Progress Bar */}
+        {/* Charging Progress Bar */}
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs label-quiet font-mono">
             <span>Charging Progress ({durationMin} min simulation)</span>
@@ -247,11 +239,11 @@ export default function ActiveTripCard() {
             ></div>
           </div>
           <p className="label-quiet text-[10px] text-slate-400">
-            Resumes Leg 2 to destination automatically upon completion.
+            {isLastLeg ? 'Final charge before destination.' : `Resumes Leg ${stopIdx + 1} to next waypoint upon completion.`}
           </p>
         </div>
 
-        {/* Pause / Resume Controls during charging */}
+        {/* Pause / Resume Controls */}
         <div className="flex items-center gap-3 pt-2">
           {navState === NAV_STATE.CHARGING && (
             <button
@@ -268,29 +260,34 @@ export default function ActiveTripCard() {
   }
 
   // -------------------------------------------------------------------------
-  // STATE 3: ACTIVE DRIVING HUD (Clean, Immersive Navigation Readout)
+  // STATE 3: ACTIVE DRIVING HUD
   // -------------------------------------------------------------------------
   if (isDrivingActive) {
     const isLeg1 = currentLeg === LEG_TYPE.ORIGIN_TO_CHARGER
     const isLeg2 = currentLeg === LEG_TYPE.CHARGER_TO_DESTINATION
 
+    // Build route corridor label for multi-stop
+    const drivingLegLabel = (() => {
+      if (navState === NAV_STATE.PAUSED) return 'Navigation Paused'
+      if (totalLegs > 1) {
+        if (isLastLeg) return `En Route · Leg ${currentLegIndex + 1} to Destination`
+        return `En Route · Leg ${currentLegIndex + 1} to Stop ${currentLegIndex + 1}`
+      }
+      return isLeg1
+        ? 'En Route · Leg 1 to Charger'
+        : isLeg2
+        ? 'En Route · Leg 2 to Destination'
+        : 'En Route · Direct Corridor'
+    })()
+
     return (
       <section className="py-6 space-y-6">
-        {/* Navigation Corridor Header */}
+        {/* Navigation Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${navState === NAV_STATE.PAUSED ? 'bg-amber-400' : 'bg-cockpit-teal animate-pulse'}`}></span>
-            <span className="label-subhead text-white">
-              {navState === NAV_STATE.PAUSED
-                ? 'Navigation Paused'
-                : isLeg1
-                ? 'En Route · Leg 1 to Charger'
-                : isLeg2
-                ? 'En Route · Leg 2 to Destination'
-                : 'En Route · Direct Corridor'}
-            </span>
+            <span className="label-subhead text-white">{drivingLegLabel}</span>
           </div>
-
           <button
             type="button"
             onClick={clearDestination}
@@ -300,10 +297,24 @@ export default function ActiveTripCard() {
           </button>
         </div>
 
-        {/* Waypoint Corridor Typography */}
+        {/* Waypoint Corridor Typography — multi-stop version */}
         <div className="display-metric text-white font-light flex items-center gap-2.5 flex-wrap">
-          <span className={isLeg1 ? 'text-cockpit-teal' : 'text-slate-400'}>Mysuru</span>
-          {journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && (
+          <span className={currentLegIndex === 0 && navState !== NAV_STATE.PAUSED ? 'text-cockpit-teal' : 'text-slate-400'}>
+            Origin
+          </span>
+          {isMultiStopJourney && journeyPlan.chargingStops.map((stop, idx) => (
+            <React.Fragment key={stop.chargerId}>
+              <span className="text-slate-600 text-lg">→</span>
+              <span className={
+                currentLegIndex === idx && navState !== NAV_STATE.PAUSED
+                  ? 'text-amber-300 font-normal'
+                  : 'text-slate-400'
+              }>
+                ⚡ {stop.chargerName}
+              </span>
+            </React.Fragment>
+          ))}
+          {!isMultiStopJourney && journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && (
             <>
               <span className="text-slate-600 text-lg">→</span>
               <span className={isLeg1 ? 'text-amber-300 font-normal' : 'text-slate-400'}>
@@ -312,12 +323,12 @@ export default function ActiveTripCard() {
             </>
           )}
           <span className="text-slate-600 text-lg">→</span>
-          <span className={isLeg2 || navState === NAV_STATE.DRIVING ? 'text-white' : 'text-slate-400'}>
+          <span className={isLastLeg || navState === NAV_STATE.DRIVING ? 'text-white' : 'text-slate-400'}>
             Destination
           </span>
         </div>
 
-        {/* Primary Driving Telemetry Display */}
+        {/* Primary Driving Telemetry */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 items-baseline py-4 border-y border-white/5">
           <div>
             <span className="label-subhead block mb-1">Vehicle Speed</span>
@@ -364,7 +375,9 @@ export default function ActiveTripCard() {
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs label-quiet font-mono">
             <span>
-              {isLeg1 ? 'Leg 1 Progress (to Charger)' : isLeg2 ? 'Leg 2 Progress (to Destination)' : 'Trip Progress'}
+              {totalLegs > 1
+                ? `Leg ${currentLegIndex + 1} of ${totalLegs} Progress`
+                : isLeg1 ? 'Leg 1 Progress (to Charger)' : isLeg2 ? 'Leg 2 Progress (to Destination)' : 'Trip Progress'}
             </span>
             <span className="text-white">{legProgressPercent}%</span>
           </div>
@@ -374,6 +387,12 @@ export default function ActiveTripCard() {
               style={{ width: `${legProgressPercent}%` }}
             ></div>
           </div>
+          {totalLegs > 1 && (
+            <div className="flex items-center justify-between text-[10px] label-quiet font-mono">
+              <span>Overall trip progress</span>
+              <span className="text-cockpit-teal">{overallTripProgressPercent}%</span>
+            </div>
+          )}
         </div>
 
         {/* Driving Controls */}
@@ -423,7 +442,7 @@ export default function ActiveTripCard() {
             Arrived Safely
           </h2>
           <p className="label-quiet">
-            Simulation concluded across road network with authoritative physics tracking.
+            Simulation concluded across {tripSummary.chargingStopCount > 0 ? `${tripSummary.chargingStopCount} charging stop${tripSummary.chargingStopCount > 1 ? 's' : ''}` : 'direct route'} with authoritative physics tracking.
           </p>
         </div>
 
@@ -491,7 +510,7 @@ export default function ActiveTripCard() {
   }
 
   // -------------------------------------------------------------------------
-  // STATE 5: PLANNED JOURNEY STATE (Ready to drive / Decision analysis)
+  // STATE 5: PLANNED JOURNEY — Multi-Stop Timeline + DIRECT + INFEASIBLE
   // -------------------------------------------------------------------------
   return (
     <section className="py-6 space-y-6">
@@ -511,7 +530,7 @@ export default function ActiveTripCard() {
             <span className="text-slate-600">·</span>
             <button
               type="button"
-              onClick={startSelectingDestination}
+              onClick={clearDestination}
               className="text-slate-400 hover:text-white transition text-[11px] cursor-pointer"
             >
               Change
@@ -527,29 +546,95 @@ export default function ActiveTripCard() {
           </div>
         </div>
 
-        {/* Waypoint Typography Display */}
-        <div className="display-metric text-white font-light flex items-center gap-2.5 flex-wrap">
-          <span>Mysuru</span>
-          {journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && (
-            <>
+        {/* Waypoint Corridor — Multi-Stop Timeline */}
+        {isMultiStopJourney ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5 flex-wrap display-metric text-white font-light">
+              <span className="text-cockpit-teal">Origin</span>
+              {journeyPlan.chargingStops.map((stop, idx) => (
+                <React.Fragment key={stop.chargerId}>
+                  <span className="text-slate-600 text-lg">→</span>
+                  <span className="text-amber-300 font-normal flex items-center gap-1">
+                    <span className="text-amber-400">⚡</span>
+                    <span>{stop.chargerName}</span>
+                  </span>
+                </React.Fragment>
+              ))}
               <span className="text-slate-600 text-lg">→</span>
-              <span className="text-amber-300 font-normal">
-                {journeyPlan.selectedCharger.name}
+              <span className="text-white">
+                {trip.destination_name || (destLatFormatted ? `(${destLatFormatted}, ${destLonFormatted})` : 'Destination')}
               </span>
-            </>
-          )}
-          <span className="text-slate-600 text-lg">→</span>
-          <span className="text-white">
-            {destLatFormatted ? `Target (${destLatFormatted}, ${destLonFormatted})` : 'Destination'}
-          </span>
-        </div>
+            </div>
+          </div>
+        ) : (
+          <div className="display-metric text-white font-light flex items-center gap-2.5 flex-wrap">
+            <span>Origin</span>
+            {journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && (
+              <>
+                <span className="text-slate-600 text-lg">→</span>
+                <span className="text-amber-300 font-normal">
+                  {journeyPlan.selectedCharger.name}
+                </span>
+              </>
+            )}
+            <span className="text-slate-600 text-lg">→</span>
+            <span className="text-white">
+              {trip.destination_name || (destLatFormatted ? `Target (${destLatFormatted}, ${destLonFormatted})` : 'Destination')}
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* Selected Destination Card & Explicit Plan Journey Button (Pre-Planning State) */}
+      {!journeyPlan && !isPlanning && (
+        <div className="space-y-5 pt-2">
+          <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-2.5">
+            <span className="label-subhead text-cockpit-teal flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cockpit-teal"></span>
+              Selected Destination
+            </span>
+            <div className="space-y-1">
+              <h3 className="text-2xl font-light text-white tracking-tight">
+                {trip.destination_name || 'Selected Waypoint'}
+              </h3>
+              {trip.destination_address && (
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {trip.destination_address}
+                </p>
+              )}
+              <p className="font-mono text-[11px] text-slate-400">
+                Coordinates: {trip.destination_latitude?.toFixed(4)}°N, {trip.destination_longitude?.toFixed(4)}°E
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 pt-1">
+            <button
+              type="button"
+              id="plan-journey-button"
+              onClick={() => planJourneyAction()}
+              disabled={isPlanning}
+              className="btn-primary px-8 py-3.5 text-xs flex items-center gap-2 cursor-pointer shadow-lg shadow-teal-500/10 font-medium"
+            >
+              <span>Plan Journey</span>
+              <span className="text-sm font-normal">→</span>
+            </button>
+            <button
+              type="button"
+              onClick={clearDestination}
+              className="btn-secondary px-6 py-3.5 text-xs cursor-pointer text-slate-300 hover:text-white"
+            >
+              Change Destination
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Loading State */}
       {isPlanning && (
         <div className="py-6 flex items-center gap-3 text-xs text-slate-400">
           <div className="animate-spin rounded-full h-4 w-4 border-2 border-cockpit-teal border-t-transparent"></div>
-          <span>Evaluating direct reachability and charging stops via /trip/plan...</span>
+          <span>Automatically generating multi-stop journey plan via /trip/plan...</span>
         </div>
       )}
 
@@ -569,7 +654,7 @@ export default function ActiveTripCard() {
         </div>
       )}
 
-      {/* INFEASIBLE Plan Result */}
+      {/* INFEASIBLE Result */}
       {journeyPlan?.decisionType === 'INFEASIBLE' && !isPlanning && (
         <div className="p-6 rounded-2xl bg-rose-950/20 border border-rose-800/30 space-y-3">
           <div className="flex items-center gap-2 text-rose-400 font-medium text-xs">
@@ -577,18 +662,18 @@ export default function ActiveTripCard() {
             <span className="label-subhead text-rose-400">Trip Infeasible</span>
           </div>
           <h3 className="text-xl font-light text-white tracking-tight">
-            Cannot Reach Destination with Current Battery
+            Trip cannot currently be completed
           </h3>
           <p className="text-xs text-slate-300 leading-relaxed max-w-lg">
-            {journeyPlan.explanation || 'No route or charging station is reachable within your remaining battery capacity.'}
+            {journeyPlan.explanation || 'No operational charging station was found within the vehicle\'s safe reachable route corridor.'}
           </p>
-          <div className="pt-2">
+          <div className="pt-2 flex items-center gap-3">
             <button
               type="button"
               onClick={startSelectingDestination}
               className="btn-secondary px-5 py-2 text-xs cursor-pointer text-white"
             >
-              Choose Closer Waypoint
+              Change Destination
             </button>
           </div>
         </div>
@@ -602,7 +687,6 @@ export default function ActiveTripCard() {
             <span className="label-subhead text-emerald-400">Direct Route · Reachable Without Charging</span>
           </div>
 
-          {/* Large Metric Composition */}
           <div className="grid grid-cols-3 gap-6 items-baseline py-4 border-y border-white/5">
             <div>
               <span className="label-subhead block mb-1">Route Distance</span>
@@ -648,47 +732,93 @@ export default function ActiveTripCard() {
         </div>
       )}
 
-      {/* CHARGE Plan Result */}
-      {journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && !isPlanning && (
+      {/* MULTI-STOP CHARGE Plan Result */}
+      {journeyPlan?.decisionType === 'CHARGE' && !isPlanning && (
         <div className="space-y-6">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-            <span className="label-subhead text-amber-400">Charging Stop Recommended</span>
+            <span className="label-subhead text-amber-400">
+              {stopCount > 1
+                ? `Automatic ${stopCount}-Stop Charging Corridor`
+                : 'Charging Stop Recommended'}
+            </span>
           </div>
 
-          {/* Recommended Charger Editorial Surface */}
-          <div className="p-6 rounded-2xl bg-amber-950/15 border border-amber-500/20 space-y-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <span className="label-subhead text-amber-400 block mb-1">Recommended Charge Stop</span>
-                <h3 className="display-metric text-white font-light">
-                  {journeyPlan.selectedCharger.name}
-                </h3>
-              </div>
-              <span className="px-3 py-1 rounded-full bg-amber-400/10 text-amber-300 font-mono text-xs font-semibold border border-amber-500/30 shrink-0">
-                ⚡ {journeyPlan.selectedCharger.powerKw} kW Fast Charger
-              </span>
+          {/* Multi-Stop Journey Timeline */}
+          {isMultiStopJourney && (
+            <div className="space-y-3">
+              {journeyPlan.chargingStops.map((stop, idx) => (
+                <div
+                  key={stop.chargerId}
+                  className="p-4 rounded-xl bg-amber-950/15 border border-amber-500/20 space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <span className="label-quiet text-amber-400/80 block text-[10px]">
+                        Stop {idx + 1} of {stopCount}
+                      </span>
+                      <span className="text-white font-light text-sm">
+                        {stop.chargerName}
+                      </span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-300 font-mono text-[10px] font-semibold border border-amber-500/20 shrink-0 whitespace-nowrap">
+                      ⚡ {stop.chargingPowerKw} kW
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[10px] font-mono tabular-nums text-slate-300">
+                    <div>
+                      <span className="label-quiet block text-[9px] font-sans">Energy Added</span>
+                      <strong className="text-amber-300">+{stop.energyAddedKwh.toFixed(1)} kWh</strong>
+                    </div>
+                    <div>
+                      <span className="label-quiet block text-[9px] font-sans">Charge Time</span>
+                      <strong>{Math.round(stop.chargingDurationMinutes)} min</strong>
+                    </div>
+                    <div>
+                      <span className="label-quiet block text-[9px] font-sans">Reliability</span>
+                      <strong className="text-emerald-400">{(stop.reliability * 100).toFixed(0)}%</strong>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
+          )}
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-white/5 text-xs font-mono tabular-nums">
-              <div>
-                <span className="label-quiet block text-[10px] font-sans">Wait Time</span>
-                <strong className="text-white text-sm">{journeyPlan.routeMetrics.chargingWaitMinutes} min</strong>
+          {/* Single-stop legacy display */}
+          {!isMultiStopJourney && journeyPlan.selectedCharger && (
+            <div className="p-6 rounded-2xl bg-amber-950/15 border border-amber-500/20 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <span className="label-subhead text-amber-400 block mb-1">Recommended Charge Stop</span>
+                  <h3 className="display-metric text-white font-light">
+                    {journeyPlan.selectedCharger.name}
+                  </h3>
+                </div>
+                <span className="px-3 py-1 rounded-full bg-amber-400/10 text-amber-300 font-mono text-xs font-semibold border border-amber-500/30 shrink-0">
+                  ⚡ {journeyPlan.selectedCharger.powerKw} kW Fast Charger
+                </span>
               </div>
-              <div>
-                <span className="label-quiet block text-[10px] font-sans">Charge Duration</span>
-                <strong className="text-white text-sm">{journeyPlan.routeMetrics.chargingDurationMinutes} min</strong>
-              </div>
-              <div>
-                <span className="label-quiet block text-[10px] font-sans">Planned Energy</span>
-                <strong className="text-amber-300 text-sm">+{journeyPlan.energyAccounting.energyAddedKwh.toFixed(1)} kWh</strong>
-              </div>
-              <div>
-                <span className="label-quiet block text-[10px] font-sans">Reliability</span>
-                <strong className="text-emerald-400 text-sm">{(journeyPlan.selectedCharger.reliability * 100).toFixed(0)}%</strong>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-white/5 text-xs font-mono tabular-nums">
+                <div>
+                  <span className="label-quiet block text-[10px] font-sans">Wait Time</span>
+                  <strong className="text-white text-sm">{journeyPlan.routeMetrics.chargingWaitMinutes} min</strong>
+                </div>
+                <div>
+                  <span className="label-quiet block text-[10px] font-sans">Charge Duration</span>
+                  <strong className="text-white text-sm">{journeyPlan.routeMetrics.chargingDurationMinutes} min</strong>
+                </div>
+                <div>
+                  <span className="label-quiet block text-[10px] font-sans">Planned Energy</span>
+                  <strong className="text-amber-300 text-sm">+{journeyPlan.energyAccounting.energyAddedKwh.toFixed(1)} kWh</strong>
+                </div>
+                <div>
+                  <span className="label-quiet block text-[10px] font-sans">Reliability</span>
+                  <strong className="text-emerald-400 text-sm">{(journeyPlan.selectedCharger.reliability * 100).toFixed(0)}%</strong>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Journey Totals */}
           <div className="grid grid-cols-3 gap-6 items-baseline py-4 border-y border-white/5">
@@ -753,7 +883,7 @@ export default function ActiveTripCard() {
         </div>
       )}
 
-      {/* AI Energy Intelligence (Driver Advisory Presentation) */}
+      {/* AI Energy Intelligence (Driver Advisory) */}
       {journeyPlan?.decisionType !== 'INFEASIBLE' && (journeyPlan || trip.route) && (
         <div className="pt-4 border-t border-white/5 space-y-3">
           <div className="flex items-center justify-between">

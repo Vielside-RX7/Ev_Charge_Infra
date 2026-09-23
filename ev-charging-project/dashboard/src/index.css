@@ -173,3 +173,11 @@ body {
 .leaflet-control-zoom a:hover {
   background-color: rgba(25, 32, 45, 0.95) !important;
 }
+
+/* OpenStreetMap Dark Automotive Tile Styling */
+.dark-tile-layer,
+.leaflet-tile-pane .dark-tile-layer,
+img.dark-tile-layer {
+  filter: brightness(0.65) invert(1) contrast(2.6) hue-rotate(200deg) saturate(0.25) brightness(0.75) !important;
+}
+

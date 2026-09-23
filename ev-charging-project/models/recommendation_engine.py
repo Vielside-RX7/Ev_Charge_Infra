@@ -42,6 +42,14 @@ RELIABILITY_CSV_PATH = os.path.join(BASE_DIR, "data", "processed", "charger_reli
 
 from occupancy_model import predict_occupancy  # noqa: E402
 from reliability_model import predict_reliability  # noqa: E402
+from operational_safety import (  # noqa: E402
+    OperationalStatus,
+    OperationalPolicy,
+    OperationalEligibilityResult,
+    check_operational_eligibility,
+    compute_station_trust_score,
+    global_feedback_manager,
+)
 
 # ---------------------------------------------------------------------------
 # Energy Consumption & Safety Buffer Constants
@@ -98,35 +106,64 @@ def load_charger_data() -> pd.DataFrame:
     Load and join the `chargers` table from PostgreSQL with the processed
     `charger_reliability_features.csv` dataset.
     Caches the resulting DataFrame in memory on first call.
+    Gracefully falls back to CSV features if DB connection is unavailable.
     """
     global _CACHED_CHARGERS_DF
     if _CACHED_CHARGERS_DF is not None:
         return _CACHED_CHARGERS_DF
 
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL is not set in environment.")
+    chargers_df = None
+    if DATABASE_URL:
+        try:
+            engine = create_engine(DATABASE_URL, echo=False)
+            chargers_df = pd.read_sql_table("chargers", engine)
+            engine.dispose()
+            chargers_df.columns = [str(c) for c in chargers_df.columns]
+        except Exception as db_err:
+            logger.warning("PostgreSQL connection unavailable: %s. Using fallback charger dataset.", db_err)
+            chargers_df = None
 
-    if not os.path.exists(RELIABILITY_CSV_PATH):
-        raise FileNotFoundError(f"Reliability features CSV not found at: {RELIABILITY_CSV_PATH}")
-
-    # Load chargers table from PostgreSQL
-    engine = create_engine(DATABASE_URL, echo=False)
-    chargers_df = pd.read_sql_table("chargers", engine)
-    engine.dispose()
-    chargers_df.columns = [str(c) for c in chargers_df.columns]
-
-    # Load precomputed reliability features
-    rel_df = pd.read_csv(RELIABILITY_CSV_PATH)
+    rel_df = pd.read_csv(RELIABILITY_CSV_PATH) if os.path.exists(RELIABILITY_CSV_PATH) else pd.DataFrame()
     rel_df.columns = [str(c) for c in rel_df.columns]
 
-    # Join on charger id
-    merged_df = chargers_df.merge(rel_df, left_on="id", right_on="charger_id", how="inner")
+    if chargers_df is None or chargers_df.empty:
+        if not rel_df.empty:
+            chargers_df = rel_df.copy()
+            chargers_df["id"] = chargers_df["charger_id"]
+            chargers_df["name"] = chargers_df["charger_id"].apply(lambda cid: f"Station #{cid}")
+            if "latitude" not in chargers_df.columns:
+                chargers_df["latitude"] = 12.0 + (chargers_df.index % 50) * 0.04
+                chargers_df["longitude"] = 77.0 + (chargers_df.index % 50) * 0.03
+            if "charging_power_kw" not in chargers_df.columns:
+                chargers_df["charging_power_kw"] = 50.0
+            if "connector_type" not in chargers_df.columns:
+                chargers_df["connector_type"] = "CCS2"
+            if "operational_status" not in chargers_df.columns:
+                chargers_df["operational_status"] = "AVAILABLE"
+            if "status_confidence" not in chargers_df.columns:
+                chargers_df["status_confidence"] = 1.0
+        else:
+            chargers_df = pd.DataFrame()
 
-    # Clean default metadata
-    merged_df["num_ports"] = merged_df["num_ports"].fillna(1).clip(lower=1).astype(int)
+    # Use LEFT join so every DB station is kept regardless of whether the
+    # reliability CSV has a matching row (e.g. newly-ingested OCM stations).
+    # Missing reliability fields are filled with conservative defaults below.
+    merged_df = chargers_df.merge(rel_df, left_on="id", right_on="charger_id", how="left") if (
+        not rel_df.empty and "charger_id" in rel_df.columns and "id" in chargers_df.columns and chargers_df is not rel_df
+    ) else chargers_df
+
+    merged_df["num_ports"] = merged_df.get("num_ports", pd.Series(1, index=merged_df.index)).fillna(1).clip(lower=1).astype(int)
     merged_df["charging_power_kw"] = (
-        merged_df["charging_power_kw"].fillna(30.0).clip(lower=3.3).astype(float)
+        merged_df.get("charging_power_kw", pd.Series(50.0, index=merged_df.index)).fillna(50.0).clip(lower=3.3).astype(float)
     )
+    if "operational_status" not in merged_df.columns:
+        merged_df["operational_status"] = "AVAILABLE"
+    if "status_confidence" not in merged_df.columns:
+        merged_df["status_confidence"] = 1.0
+    if "reliability" not in merged_df.columns:
+        merged_df["reliability"] = merged_df.get("success_rate", pd.Series(0.90, index=merged_df.index)).fillna(0.90)
+    if "probability_available" not in merged_df.columns:
+        merged_df["probability_available"] = 0.85
 
     _CACHED_CHARGERS_DF = merged_df
     return _CACHED_CHARGERS_DF
@@ -359,6 +396,7 @@ def score_and_rank_chargers(
     energy_consumption_kwh_per_km: float = DEFAULT_ENERGY_CONSUMPTION_KWH_PER_KM,
     reserve_battery_percent: float = DEFAULT_RESERVE_BATTERY_PERCENT,
     debug_mode: bool = False,
+    operational_policy: Optional[OperationalPolicy] = None,
 ) -> List[Dict[str, Any]]:
     """
     Score and rank charging stations within radius that are physically reachable
@@ -394,6 +432,8 @@ def score_and_rank_chargers(
         Safety reserve buffer percentage subtracted from current SoC.
     debug_mode : bool, default False
         When True, returns all candidates within radius with normalized components.
+    operational_policy : OperationalPolicy, optional
+        Configurable operational safety policy for station eligibility gate.
 
     Returns
     -------
@@ -433,7 +473,7 @@ def score_and_rank_chargers(
         reserve_battery_percent=reserve_battery_percent,
     )
 
-    # 1. Filter by radius & evaluate connector compatibility
+    # 1. Filter by radius, connector compatibility & evaluate operational eligibility
     candidates_raw: List[Dict[str, Any]] = []
 
     for _, row in chargers_df.iterrows():
@@ -444,7 +484,19 @@ def score_and_rank_chargers(
         if dist_km <= max_search_radius_km:
             c_conn = row.get("connector_type")
             is_compat = is_connector_compatible(connector_type, c_conn)
-            candidates_raw.append({"row": row, "distance_km": dist_km, "is_compatible": is_compat})
+            row_dict = dict(row)
+            eligibility = check_operational_eligibility(
+                row_dict,
+                policy=operational_policy,
+                feedback_mgr=global_feedback_manager,
+                as_of=arrival_datetime,
+            )
+            candidates_raw.append({
+                "row": row,
+                "distance_km": dist_km,
+                "is_compatible": is_compat,
+                "eligibility": eligibility,
+            })
 
     # Geographic empty search radius
     if not candidates_raw:
@@ -459,16 +511,17 @@ def score_and_rank_chargers(
             min_distance_km=round(min_cand_dist, 2),
         )
 
-    # 2. Connector Compatibility Filtering with Fallback
-    compat_candidates = [c for c in candidates_raw if c["is_compatible"]]
-    has_compat_match = len(compat_candidates) > 0
-
+    # 2. Operational Safety Gate & Connector Compatibility Filtering
     if debug_mode:
-        # In debug mode, evaluate and return all candidates in radius with compatibility flag
+        # In debug mode, evaluate and return all candidates in radius with operational flags
         active_candidates = candidates_raw
     else:
-        # In normal mode, strictly filter to compatible candidates unless zero match (fallback)
-        active_candidates = compat_candidates if has_compat_match else candidates_raw
+        # In normal mode, strictly filter out candidates that fail the operational eligibility gate
+        eligible_candidates = [c for c in candidates_raw if c["eligibility"].eligible]
+        if not eligible_candidates:
+            return []
+        compat_candidates = [c for c in eligible_candidates if c["is_compatible"]]
+        active_candidates = compat_candidates if len(compat_candidates) > 0 else eligible_candidates
 
     # 3. Capture Full-Pool Normalization Bounds (Before Top-K Trimming)
     # Crucial Stability Fix: Locking in min-max reference statistics across the FULL radius-and-compatibility
@@ -531,6 +584,15 @@ def score_and_rank_chargers(
         )
         cost_inr = estimate_cost_inr(energy_needed_kwh)
 
+        elig = item.get("eligibility")
+        if elig is None:
+            elig = check_operational_eligibility(
+                dict(row),
+                policy=operational_policy,
+                feedback_mgr=global_feedback_manager,
+                as_of=arrival_datetime,
+            )
+
         return {
             "charger_id": c_id,
             "name": str(row["name"]),
@@ -545,11 +607,18 @@ def score_and_rank_chargers(
             "distance_km": round(road_dist_km, 2),
             "travel_time_minutes": round(travel_time_min, 1),
             "reliability": round(rel_score, 4),
+            "availability": round(prob_available, 4),
             "probability_available": round(prob_available, 4),
             "estimated_charging_time_minutes": round(chg_time_min, 1),
             "estimated_cost_inr": round(cost_inr, 2),
             "compatible": bool(item["is_compatible"]),
             "usable_range_km": round(usable_range_km, 1),
+            "operational_status": elig.operational_status.value,
+            "status_confidence": elig.status_confidence,
+            "status_last_updated": elig.status_last_updated_iso,
+            "eligible_for_planning": elig.eligible,
+            "rejection_reason": elig.rejection_reason,
+            "trust_score": elig.trust_score,
         }
 
     # Execute concurrent OSRM & inference calls with max_workers=8

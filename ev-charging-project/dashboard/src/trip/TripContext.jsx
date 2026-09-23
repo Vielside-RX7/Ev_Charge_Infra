@@ -9,13 +9,21 @@ const TripContext = createContext(null)
 
 /**
  * TripProvider wraps the application and supplies active trip state, journey planning,
- * and the authoritative Change 23 Navigation State Machine.
- * 
- * Navigation State Machine:
- *   IDLE -> PLANNING -> READY -> DRIVING -> COMPLETED (Direct)
- *   IDLE -> PLANNING -> READY -> DRIVING_LEG_1 -> CHARGING -> DRIVING_LEG_2 -> COMPLETED (Charge)
- *   Pause / Resume allowed during DRIVING, DRIVING_LEG_1, DRIVING_LEG_2.
+ * and the authoritative Change 23 / Change 28 Navigation State Machine.
+ *
+ * Navigation State Machine (N-Leg Multi-Stop):
+ *   IDLE -> PLANNING -> READY -> DRIVING -> COMPLETED              (Direct, 0 stops)
+ *   IDLE -> PLANNING -> READY -> DRIVING_LEG_1 -> CHARGING ->
+ *           DRIVING_LEG_2 -> [CHARGING -> DRIVING_LEG_N ...] ->
+ *           COMPLETED                                              (Multi-Stop, N stops)
+ *   Pause / Resume allowed during any DRIVING_LEG_* or CHARGING state.
  *   Reset restores vehicle state, route progress, and stops all timers.
+ *
+ * Change 28 Extension:
+ *   The runner now iterates over journeyPlan.multiStopLegs[] and
+ *   journeyPlan.chargingStops[] to execute each drive-charge cycle dynamically.
+ *   currentLegIndex tracks which driving leg is active (0-indexed).
+ *   activeChargingStopIndex tracks which charging stop is active (0-indexed).
  */
 export function TripProvider({ children }) {
   const { telemetry, updateTelemetry, chargeTelemetry, resetTelemetry } = useTelemetry()
@@ -23,7 +31,7 @@ export function TripProvider({ children }) {
 
   // Selected destination coordinates { latitude, longitude } or null
   const [destination, setDestinationState] = useState(null)
-  
+
   // Destination selection mode on map
   const [isSelectingDestination, setIsSelectingDestination] = useState(false)
 
@@ -35,11 +43,15 @@ export function TripProvider({ children }) {
   // Route state fallback and points cache for map & simulation
   const [routeData, setRouteData] = useState(null)
 
-  // Explicit Change 23 Navigation State Machine
+  // Explicit Change 23 / 28 Navigation State Machine
   const [navState, setNavState] = useState(NAV_STATE.IDLE)
-  const [currentLeg, setCurrentLeg] = useState(null) // 'DIRECT' | 'ORIGIN_TO_CHARGER' | 'CHARGER_TO_DESTINATION' | null
+  const [currentLeg, setCurrentLeg] = useState(null) // LEG_TYPE or null
   const [legProgressPercent, setLegProgressPercent] = useState(0) // 0..100
   const [overallTripProgressPercent, setOverallTripProgressPercent] = useState(0) // 0..100
+
+  // Multi-stop leg index tracking (Change 28)
+  const [currentLegIndex, setCurrentLegIndex] = useState(0) // 0..N (index into multiStopLegs)
+  const [activeChargingStopIndex, setActiveChargingStopIndex] = useState(0) // 0..N-1
 
   // Simulation execution tracking
   const [simulationProgress, setSimulationProgress] = useState(0.0) // 0.0 .. 1.0 overall progress
@@ -53,10 +65,10 @@ export function TripProvider({ children }) {
   const driveTimerRef = useRef(null)
   const chargeTimerRef = useRef(null)
   const currentLegRef = useRef(null)
-  const pausedStateRef = useRef(null) // remembers whether paused from DRIVING, DRIVING_LEG_1, DRIVING_LEG_2, CHARGING
-  const chargeStepRef = useRef(0) // tracks simulated charging step for clean pause/resume
+  const pausedStateRef = useRef(null)
+  const chargeStepRef = useRef(0)
 
-  // Active telemetry reference to prevent stale closures and excessive hook re-triggers
+  // Active telemetry reference to prevent stale closures
   const telemetryRef = useRef(telemetry)
   useEffect(() => {
     telemetryRef.current = telemetry
@@ -66,6 +78,10 @@ export function TripProvider({ children }) {
   const legProgressRef = useRef(0.0) // 0.0 .. 1.0 within current active leg
   const lastLegProgressRef = useRef(0.0)
   const tripStartTimeRef = useRef(null)
+
+  // Multi-stop planner: save leg/stop sequence refs for resume after pause
+  const legSequenceRef = useRef([]) // [{leg, stop?}] computed at startSimulation
+  const currentLegIdxRef = useRef(0)
 
   // Clear all running timers on unmount
   useEffect(() => {
@@ -111,7 +127,6 @@ export function TripProvider({ children }) {
         setJourneyPlan(plan)
 
         if (plan.decisionType === 'INFEASIBLE') {
-          // Strictly avoid rendering misleading route data when journey is infeasible
           setRouteData(null)
           setNavState(NAV_STATE.INFEASIBLE)
           setCurrentLeg(null)
@@ -122,7 +137,8 @@ export function TripProvider({ children }) {
             polylinePoints: plan.fullPolylinePoints,
           })
           setNavState(NAV_STATE.READY)
-          setCurrentLeg(plan.decisionType === 'CHARGE' ? LEG_TYPE.ORIGIN_TO_CHARGER : LEG_TYPE.DIRECT)
+          // For multi-stop, always start at leg 1; for direct, use DIRECT
+          setCurrentLeg(plan.decisionType === 'DIRECT' ? LEG_TYPE.DIRECT : LEG_TYPE.ORIGIN_TO_CHARGER)
         }
 
         return plan
@@ -143,11 +159,9 @@ export function TripProvider({ children }) {
     [destination, vehicleProfile]
   )
 
-  // Automatically trigger /trip/plan when destination changes
+  // Clear plan when destination is reset to null
   useEffect(() => {
-    if (destination) {
-      executePlanJourney()
-    } else {
+    if (!destination) {
       setJourneyPlan(null)
       setPlanError(null)
       setIsPlanning(false)
@@ -157,7 +171,7 @@ export function TripProvider({ children }) {
       setLegProgressPercent(0)
       setOverallTripProgressPercent(0)
     }
-  }, [destination, executePlanJourney])
+  }, [destination])
 
   // Derived canonical Trip State
   const trip = useMemo(() => {
@@ -171,6 +185,10 @@ export function TripProvider({ children }) {
       routeError: planError,
       availableEnergyKwh: telemetry.remaining_energy_kwh,
     })
+
+    baseState.destination_name = destination?.name || null
+    baseState.destination_address = destination?.address || null
+    baseState.destination_place_id = destination?.placeId || null
 
     if (journeyPlan) {
       baseState.destination_feasible = journeyPlan.decisionType === 'DIRECT'
@@ -196,7 +214,7 @@ export function TripProvider({ children }) {
   }
 
   // ---------------------------------------------------------------------------
-  // STEP 3, 4, 5: DRIVING LEG SIMULATOR
+  // DRIVING LEG SIMULATOR
   // Progresses the Virtual EV along road polyline points, applying incremental
   // physics-based discharge (0.15 kWh/km) and updating telemetry continuously.
   // ---------------------------------------------------------------------------
@@ -231,7 +249,6 @@ export function TripProvider({ children }) {
         speed_kmph: simulatedSpeed,
       })
 
-      // Duration: 5.0 seconds per leg for responsive interactive demo
       const TICK_MS = 100
       const LEG_DURATION_MS = 5000
       const STEP_PROGRESS = TICK_MS / LEG_DURATION_MS
@@ -240,12 +257,10 @@ export function TripProvider({ children }) {
         legProgressRef.current += STEP_PROGRESS
         const clampedLegP = Math.min(1.0, legProgressRef.current)
 
-        // Incremental distance calculation for authoritative physics baseline
         const progressDelta = Math.max(0, clampedLegP - lastLegProgressRef.current)
         lastLegProgressRef.current = clampedLegP
         const incrementalDist = progressDelta * safeLegDist
 
-        // Interpolate along road coordinates
         const exactIdx = clampedLegP * maxIdx
         const i = Math.floor(exactIdx)
         const frac = exactIdx - i
@@ -261,7 +276,6 @@ export function TripProvider({ children }) {
           currentLon = p1[1] + frac * (p2[1] - p1[1])
         }
 
-        // Calculate overall trip progress
         const currentTotalTraveledKm = priorDistanceTraveledKm + clampedLegP * safeLegDist
         const overallP = totalTripDistanceKm > 0
           ? Math.min(1.0, currentTotalTraveledKm / totalTripDistanceKm)
@@ -271,7 +285,6 @@ export function TripProvider({ children }) {
         setOverallTripProgressPercent(Math.round(overallP * 100))
         setSimulationProgress(overallP)
 
-        // Telemetry update
         updateTelemetry({
           latitude: parseFloat(currentLat.toFixed(6)),
           longitude: parseFloat(currentLon.toFixed(6)),
@@ -280,7 +293,6 @@ export function TripProvider({ children }) {
           incremental_distance_km: incrementalDist,
         })
 
-        // Record live sample for advisory LSTM analysis (read fresh telemetry via ref to avoid stale closures)
         const freshTelem = telemetryRef.current
         tripRecorder.recordSample({
           latitude: currentLat,
@@ -290,7 +302,6 @@ export function TripProvider({ children }) {
           energyConsumedKwh: freshTelem.energy_consumed_kwh,
         })
 
-        // Leg Completion
         if (clampedLegP >= 1.0) {
           stopAllTimers()
           if (onLegComplete) {
@@ -303,18 +314,17 @@ export function TripProvider({ children }) {
   )
 
   // ---------------------------------------------------------------------------
-  // STEP 7, 8: SIMULATED CHARGING
-  // Adds planned charging energy over ~3.5 seconds, then resumes to Leg 2.
+  // SIMULATED CHARGING
+  // Adds planned charging energy over ~3.5 seconds, then calls onChargingComplete.
   // Supports deterministic pause and resume via chargeStepRef.
   // ---------------------------------------------------------------------------
   const runChargingSimulation = useCallback(
-    (plan, onChargingComplete, isResume = false) => {
+    (chargingStop, onChargingComplete, isResume = false) => {
       stopAllTimers()
       setNavState(NAV_STATE.CHARGING)
-      setCurrentLeg(LEG_TYPE.ORIGIN_TO_CHARGER)
 
-      const chargerName = plan.selectedCharger?.name || 'Fast Charger'
-      const energyToAdd = Number(plan.energyAccounting?.energyAddedKwh) || 10.0
+      const chargerName = chargingStop?.chargerName || chargingStop?.name || 'Fast Charger'
+      const energyToAdd = Number(chargingStop?.energyAddedKwh) || 10.0
 
       updateTelemetry({
         speed_kmph: 0.0,
@@ -322,7 +332,7 @@ export function TripProvider({ children }) {
       })
 
       const TICK_MS = 100
-      const CHARGE_DURATION_MS = 3500 // 3.5 seconds simulated charge demo
+      const CHARGE_DURATION_MS = 3500
       const totalSteps = Math.round(CHARGE_DURATION_MS / TICK_MS)
       const energyPerStep = energyToAdd / totalSteps
 
@@ -341,7 +351,6 @@ export function TripProvider({ children }) {
         setSimulatedChargingProgress(pct)
         setChargingEnergyAddedSoFar(addedNow)
 
-        // Add incremental charge to authoritative telemetry
         chargeTelemetry(energyPerStep, `Charging (${addedNow.toFixed(1)} / ${energyToAdd.toFixed(1)} kWh)`)
 
         if (step >= totalSteps) {
@@ -349,7 +358,7 @@ export function TripProvider({ children }) {
           chargeStepRef.current = 0
           updateTelemetry({
             speed_kmph: 0.0,
-            vehicle_status: 'Charging Complete · Ready for Leg 2',
+            vehicle_status: `Charging Complete · Departing ${chargerName}`,
           })
           if (onChargingComplete) {
             onChargingComplete()
@@ -361,8 +370,7 @@ export function TripProvider({ children }) {
   )
 
   // ---------------------------------------------------------------------------
-  // STEP 10: DESTINATION ARRIVAL
-  // Stops vehicle, marks COMPLETED, logs final summary with live telemetry.
+  // DESTINATION ARRIVAL
   // ---------------------------------------------------------------------------
   const handleDestinationArrival = useCallback(
     (plan) => {
@@ -376,7 +384,7 @@ export function TripProvider({ children }) {
       const freshTelem = telemetryRef.current
       const totalDist = Number(plan.routeMetrics?.totalDistanceKm) || 0
       const energyUsed = Number(freshTelem.energy_consumed_kwh) || (totalDist * 0.15)
-      const chargingEnergy = Number(plan.energyAccounting?.energyAddedKwh) || 0
+      const totalChargingAdded = (plan.chargingStops || []).reduce((acc, s) => acc + (Number(s.energyAddedKwh) || 0), 0)
       const finalDuration = tripStartTimeRef.current
         ? Math.max(1, Math.round((Date.now() - tripStartTimeRef.current) / 1000))
         : Math.round(plan.routeMetrics?.travelTimeMinutes || 15)
@@ -397,7 +405,8 @@ export function TripProvider({ children }) {
         finalEnergyConsumedKwh: energyUsed,
         finalSocPercent: freshTelem.current_soc_percent,
         finalRemainingEnergyKwh: freshTelem.remaining_energy_kwh,
-        chargingEnergyAddedKwh: plan.decisionType === 'CHARGE' ? chargingEnergy : 0.0,
+        chargingEnergyAddedKwh: totalChargingAdded,
+        chargingStopCount: plan.chargingStopCount || 0,
         tripDurationSeconds: finalDuration,
       })
     },
@@ -405,8 +414,78 @@ export function TripProvider({ children }) {
   )
 
   // ---------------------------------------------------------------------------
+  // MULTI-STOP N-LEG RUNNER
+  // Recursively chains: DriveLeg[i] → ChargingStop[i] → DriveLeg[i+1] → ...
+  // Works for 0 stops (DIRECT), 1 stop, or N stops.
+  // ---------------------------------------------------------------------------
+  const runLegSequence = useCallback(
+    (plan, legIdx, priorDistKm) => {
+      const legs = plan.multiStopLegs || []
+      const stops = plan.chargingStops || []
+      const totalDist = Number(plan.routeMetrics?.totalDistanceKm) || 5.0
+
+      if (legIdx >= legs.length) {
+        // All legs done → Arrived
+        handleDestinationArrival(plan)
+        return
+      }
+
+      const leg = legs[legIdx]
+      currentLegIdxRef.current = legIdx
+      setCurrentLegIndex(legIdx)
+
+      // Determine legType label for UI
+      const isLast = legIdx === legs.length - 1
+      let legType
+      if (legs.length === 1) {
+        legType = LEG_TYPE.DIRECT
+      } else if (legIdx === 0) {
+        legType = LEG_TYPE.ORIGIN_TO_CHARGER
+      } else if (isLast) {
+        legType = LEG_TYPE.CHARGER_TO_DESTINATION
+      } else {
+        legType = LEG_TYPE.ORIGIN_TO_CHARGER // intermediate driving leg
+      }
+
+      // NAV_STATE for driving
+      const drivingNavState = legs.length === 1
+        ? NAV_STATE.DRIVING
+        : legIdx === 0
+        ? NAV_STATE.DRIVING_LEG_1
+        : NAV_STATE.DRIVING_LEG_2
+
+      setNavState(drivingNavState)
+      legProgressRef.current = 0.0
+      lastLegProgressRef.current = 0.0
+      setLegProgressPercent(0)
+
+      runDriveLeg({
+        legType,
+        points: leg.polylinePoints || [],
+        legDistanceKm: leg.distanceKm,
+        legTravelTimeMin: leg.travelTimeMinutes,
+        totalTripDistanceKm: totalDist,
+        priorDistanceTraveledKm: priorDistKm,
+        onLegComplete: () => {
+          // Is there a charging stop after this driving leg?
+          const stopAfterThisLeg = stops[legIdx]
+          if (stopAfterThisLeg && !isLast) {
+            setActiveChargingStopIndex(legIdx)
+            runChargingSimulation(stopAfterThisLeg, () => {
+              runLegSequence(plan, legIdx + 1, priorDistKm + leg.distanceKm)
+            })
+          } else {
+            // No charging stop (final leg or direct) → go to next leg or arrival
+            runLegSequence(plan, legIdx + 1, priorDistKm + leg.distanceKm)
+          }
+        },
+      })
+    },
+    [runDriveLeg, runChargingSimulation, handleDestinationArrival]
+  )
+
+  // ---------------------------------------------------------------------------
   // START SIMULATION / NAVIGATION
-  // Initiates navigation state machine according to authoritative decisionType.
   // ---------------------------------------------------------------------------
   const startSimulation = useCallback(() => {
     if (!journeyPlan || journeyPlan.decisionType === 'INFEASIBLE') return
@@ -414,8 +493,9 @@ export function TripProvider({ children }) {
     stopAllTimers()
     tripStartTimeRef.current = Date.now()
     setTripSummary(null)
+    setCurrentLegIndex(0)
+    setActiveChargingStopIndex(0)
 
-    const isCharge = journeyPlan.decisionType === 'CHARGE'
     const totalDist = Number(journeyPlan.routeMetrics?.totalDistanceKm) || 5.0
     const travelTimeMin = Number(journeyPlan.routeMetrics?.travelTimeMinutes) || 15
 
@@ -429,86 +509,87 @@ export function TripProvider({ children }) {
       drivingStyle: 'Normal',
     })
 
-    if (!isCharge) {
-      // ---------------- DIRECT JOURNEY ----------------
-      setNavState(NAV_STATE.DRIVING)
-      setCurrentLeg(LEG_TYPE.DIRECT)
-      legProgressRef.current = 0.0
-      lastLegProgressRef.current = 0.0
-      setLegProgressPercent(0)
-      setOverallTripProgressPercent(0)
-      setSimulationProgress(0.0)
+    setOverallTripProgressPercent(0)
+    setSimulationProgress(0.0)
 
-      const directPoints = journeyPlan.legs?.direct?.polylinePoints || journeyPlan.fullPolylinePoints || []
-      const legDist = Number(journeyPlan.legs?.direct?.distanceKm) || totalDist
-      const legTime = Number(journeyPlan.legs?.direct?.travelTimeMinutes) || 10
-
-      runDriveLeg({
-        legType: LEG_TYPE.DIRECT,
-        points: directPoints,
-        legDistanceKm: legDist,
-        legTravelTimeMin: legTime,
-        totalTripDistanceKm: totalDist,
-        priorDistanceTraveledKm: 0,
-        onLegComplete: () => {
-          handleDestinationArrival(journeyPlan)
-        },
-      })
+    // Use multi-stop leg sequence if available; fall back to legacy 2-leg path
+    const multiLegs = journeyPlan.multiStopLegs || []
+    if (multiLegs.length > 0) {
+      runLegSequence(journeyPlan, 0, 0)
     } else {
-      // ---------------- CHARGE JOURNEY ----------------
-      // Leg 1: Origin -> Charger
-      setNavState(NAV_STATE.DRIVING_LEG_1)
-      setCurrentLeg(LEG_TYPE.ORIGIN_TO_CHARGER)
-      legProgressRef.current = 0.0
-      lastLegProgressRef.current = 0.0
-      setLegProgressPercent(0)
-      setOverallTripProgressPercent(0)
-      setSimulationProgress(0.0)
+      // Legacy direct / single-stop fallback
+      const isCharge = journeyPlan.decisionType === 'CHARGE'
+      if (!isCharge) {
+        setNavState(NAV_STATE.DRIVING)
+        setCurrentLeg(LEG_TYPE.DIRECT)
+        legProgressRef.current = 0.0
+        lastLegProgressRef.current = 0.0
+        setLegProgressPercent(0)
 
-      const leg1Points = journeyPlan.legs?.originToCharger?.polylinePoints || []
-      const leg1Dist = Number(journeyPlan.legs?.originToCharger?.distanceKm) || (totalDist * 0.5)
-      const leg1Time = Number(journeyPlan.legs?.originToCharger?.travelTimeMinutes) || 10
+        const directPoints = journeyPlan.legs?.direct?.polylinePoints || journeyPlan.fullPolylinePoints || []
+        runDriveLeg({
+          legType: LEG_TYPE.DIRECT,
+          points: directPoints,
+          legDistanceKm: journeyPlan.legs?.direct?.distanceKm || totalDist,
+          legTravelTimeMin: journeyPlan.legs?.direct?.travelTimeMinutes || 10,
+          totalTripDistanceKm: totalDist,
+          priorDistanceTraveledKm: 0,
+          onLegComplete: () => handleDestinationArrival(journeyPlan),
+        })
+      } else {
+        setNavState(NAV_STATE.DRIVING_LEG_1)
+        setCurrentLeg(LEG_TYPE.ORIGIN_TO_CHARGER)
+        legProgressRef.current = 0.0
+        lastLegProgressRef.current = 0.0
+        setLegProgressPercent(0)
 
-      const leg2Points = journeyPlan.legs?.chargerToDestination?.polylinePoints || []
-      const leg2Dist = Number(journeyPlan.legs?.chargerToDestination?.distanceKm) || (totalDist * 0.5)
-      const leg2Time = Number(journeyPlan.legs?.chargerToDestination?.travelTimeMinutes) || 10
+        const leg1Points = journeyPlan.legs?.originToCharger?.polylinePoints || []
+        const leg1Dist = Number(journeyPlan.legs?.originToCharger?.distanceKm) || (totalDist * 0.5)
+        const leg1Time = Number(journeyPlan.legs?.originToCharger?.travelTimeMinutes) || 10
 
-      runDriveLeg({
-        legType: LEG_TYPE.ORIGIN_TO_CHARGER,
-        points: leg1Points,
-        legDistanceKm: leg1Dist,
-        legTravelTimeMin: leg1Time,
-        totalTripDistanceKm: totalDist,
-        priorDistanceTraveledKm: 0,
-        onLegComplete: () => {
-          // Reached Charger -> transition to CHARGING
-          runChargingSimulation(journeyPlan, () => {
-            // Charging Finished -> transition to DRIVING_LEG_2
-            setNavState(NAV_STATE.DRIVING_LEG_2)
-            setCurrentLeg(LEG_TYPE.CHARGER_TO_DESTINATION)
-            legProgressRef.current = 0.0
-            lastLegProgressRef.current = 0.0
-            setLegProgressPercent(0)
+        const leg2Points = journeyPlan.legs?.chargerToDestination?.polylinePoints || []
+        const leg2Dist = Number(journeyPlan.legs?.chargerToDestination?.distanceKm) || (totalDist * 0.5)
+        const leg2Time = Number(journeyPlan.legs?.chargerToDestination?.travelTimeMinutes) || 10
 
-            runDriveLeg({
-              legType: LEG_TYPE.CHARGER_TO_DESTINATION,
-              points: leg2Points,
-              legDistanceKm: leg2Dist,
-              legTravelTimeMin: leg2Time,
-              totalTripDistanceKm: totalDist,
-              priorDistanceTraveledKm: leg1Dist,
-              onLegComplete: () => {
-                handleDestinationArrival(journeyPlan)
-              },
+        // Use selectedCharger as the charging stop object for legacy path
+        const legacyStop = journeyPlan.selectedCharger
+          ? { chargerName: journeyPlan.selectedCharger.name, energyAddedKwh: journeyPlan.energyAccounting?.energyAddedKwh || 10 }
+          : null
+
+        runDriveLeg({
+          legType: LEG_TYPE.ORIGIN_TO_CHARGER,
+          points: leg1Points,
+          legDistanceKm: leg1Dist,
+          legTravelTimeMin: leg1Time,
+          totalTripDistanceKm: totalDist,
+          priorDistanceTraveledKm: 0,
+          onLegComplete: () => {
+            runChargingSimulation(legacyStop, () => {
+              setNavState(NAV_STATE.DRIVING_LEG_2)
+              setCurrentLeg(LEG_TYPE.CHARGER_TO_DESTINATION)
+              legProgressRef.current = 0.0
+              lastLegProgressRef.current = 0.0
+              setLegProgressPercent(0)
+
+              runDriveLeg({
+                legType: LEG_TYPE.CHARGER_TO_DESTINATION,
+                points: leg2Points,
+                legDistanceKm: leg2Dist,
+                legTravelTimeMin: leg2Time,
+                totalTripDistanceKm: totalDist,
+                priorDistanceTraveledKm: leg1Dist,
+                onLegComplete: () => handleDestinationArrival(journeyPlan),
+              })
             })
-          })
-        },
-      })
+          },
+        })
+      }
     }
-  }, [journeyPlan, vehicleProfile, runDriveLeg, runChargingSimulation, handleDestinationArrival])
+  }, [journeyPlan, vehicleProfile, runLegSequence, runDriveLeg, runChargingSimulation, handleDestinationArrival])
 
   // ---------------------------------------------------------------------------
-  // STEP 11: PAUSE / RESUME
+  // PAUSE / RESUME
+  // For multi-stop journeys, resume restarts from the current leg index.
   // ---------------------------------------------------------------------------
   const pauseSimulation = useCallback(() => {
     stopAllTimers()
@@ -526,47 +607,64 @@ export function TripProvider({ children }) {
     const previousState = pausedStateRef.current || NAV_STATE.DRIVING
     setNavState(previousState)
 
-    const isCharge = journeyPlan.decisionType === 'CHARGE'
+    const multiLegs = journeyPlan.multiStopLegs || []
     const totalDist = Number(journeyPlan.routeMetrics?.totalDistanceKm) || 5.0
 
-    if (previousState === NAV_STATE.DRIVING) {
-      const directPoints = journeyPlan.legs?.direct?.polylinePoints || journeyPlan.fullPolylinePoints || []
-      const legDist = Number(journeyPlan.legs?.direct?.distanceKm) || totalDist
-      const legTime = Number(journeyPlan.legs?.direct?.travelTimeMinutes) || 10
+    if (multiLegs.length > 0) {
+      // Resume multi-stop from the leg we paused on
+      const resumeLegIdx = currentLegIdxRef.current
+      const priorDist = multiLegs
+        .slice(0, resumeLegIdx)
+        .reduce((acc, l) => acc + (l.distanceKm || 0), 0)
 
+      if (previousState === NAV_STATE.CHARGING) {
+        const stop = journeyPlan.chargingStops?.[resumeLegIdx - 1] || null
+        runChargingSimulation(
+          stop,
+          () => runLegSequence(journeyPlan, resumeLegIdx, priorDist),
+          true /* isResume */
+        )
+      } else {
+        runLegSequence(journeyPlan, resumeLegIdx, priorDist)
+      }
+      return
+    }
+
+    // Legacy 2-leg resume
+    const isCharge = journeyPlan.decisionType === 'CHARGE'
+    if (previousState === NAV_STATE.DRIVING) {
       runDriveLeg({
         legType: LEG_TYPE.DIRECT,
-        points: directPoints,
-        legDistanceKm: legDist,
-        legTravelTimeMin: legTime,
+        points: journeyPlan.legs?.direct?.polylinePoints || journeyPlan.fullPolylinePoints || [],
+        legDistanceKm: journeyPlan.legs?.direct?.distanceKm || totalDist,
+        legTravelTimeMin: journeyPlan.legs?.direct?.travelTimeMinutes || 10,
         totalTripDistanceKm: totalDist,
         priorDistanceTraveledKm: 0,
         onLegComplete: () => handleDestinationArrival(journeyPlan),
       })
     } else if (previousState === NAV_STATE.DRIVING_LEG_1) {
-      const leg1Points = journeyPlan.legs?.originToCharger?.polylinePoints || []
       const leg1Dist = Number(journeyPlan.legs?.originToCharger?.distanceKm) || (totalDist * 0.5)
-      const leg1Time = Number(journeyPlan.legs?.originToCharger?.travelTimeMinutes) || 10
-
       const leg2Points = journeyPlan.legs?.chargerToDestination?.polylinePoints || []
       const leg2Dist = Number(journeyPlan.legs?.chargerToDestination?.distanceKm) || (totalDist * 0.5)
       const leg2Time = Number(journeyPlan.legs?.chargerToDestination?.travelTimeMinutes) || 10
+      const legacyStop = journeyPlan.selectedCharger
+        ? { chargerName: journeyPlan.selectedCharger.name, energyAddedKwh: journeyPlan.energyAccounting?.energyAddedKwh || 10 }
+        : null
 
       runDriveLeg({
         legType: LEG_TYPE.ORIGIN_TO_CHARGER,
-        points: leg1Points,
+        points: journeyPlan.legs?.originToCharger?.polylinePoints || [],
         legDistanceKm: leg1Dist,
-        legTravelTimeMin: leg1Time,
+        legTravelTimeMin: journeyPlan.legs?.originToCharger?.travelTimeMinutes || 10,
         totalTripDistanceKm: totalDist,
         priorDistanceTraveledKm: 0,
         onLegComplete: () => {
-          runChargingSimulation(journeyPlan, () => {
+          runChargingSimulation(legacyStop, () => {
             setNavState(NAV_STATE.DRIVING_LEG_2)
             setCurrentLeg(LEG_TYPE.CHARGER_TO_DESTINATION)
             legProgressRef.current = 0.0
             lastLegProgressRef.current = 0.0
             setLegProgressPercent(0)
-
             runDriveLeg({
               legType: LEG_TYPE.CHARGER_TO_DESTINATION,
               points: leg2Points,
@@ -580,21 +678,22 @@ export function TripProvider({ children }) {
         },
       })
     } else if (previousState === NAV_STATE.CHARGING) {
-      // Seamlessly resume simulated charging from the captured step
       const leg1Dist = Number(journeyPlan.legs?.originToCharger?.distanceKm) || (totalDist * 0.5)
       const leg2Points = journeyPlan.legs?.chargerToDestination?.polylinePoints || []
       const leg2Dist = Number(journeyPlan.legs?.chargerToDestination?.distanceKm) || (totalDist * 0.5)
       const leg2Time = Number(journeyPlan.legs?.chargerToDestination?.travelTimeMinutes) || 10
+      const legacyStop = journeyPlan.selectedCharger
+        ? { chargerName: journeyPlan.selectedCharger.name, energyAddedKwh: journeyPlan.energyAccounting?.energyAddedKwh || 10 }
+        : null
 
       runChargingSimulation(
-        journeyPlan,
+        legacyStop,
         () => {
           setNavState(NAV_STATE.DRIVING_LEG_2)
           setCurrentLeg(LEG_TYPE.CHARGER_TO_DESTINATION)
           legProgressRef.current = 0.0
           lastLegProgressRef.current = 0.0
           setLegProgressPercent(0)
-
           runDriveLeg({
             legType: LEG_TYPE.CHARGER_TO_DESTINATION,
             points: leg2Points,
@@ -609,25 +708,20 @@ export function TripProvider({ children }) {
       )
     } else if (previousState === NAV_STATE.DRIVING_LEG_2) {
       const leg1Dist = Number(journeyPlan.legs?.originToCharger?.distanceKm) || (totalDist * 0.5)
-      const leg2Points = journeyPlan.legs?.chargerToDestination?.polylinePoints || []
-      const leg2Dist = Number(journeyPlan.legs?.chargerToDestination?.distanceKm) || (totalDist * 0.5)
-      const leg2Time = Number(journeyPlan.legs?.chargerToDestination?.travelTimeMinutes) || 10
-
       runDriveLeg({
         legType: LEG_TYPE.CHARGER_TO_DESTINATION,
-        points: leg2Points,
-        legDistanceKm: leg2Dist,
-        legTravelTimeMin: leg2Time,
+        points: journeyPlan.legs?.chargerToDestination?.polylinePoints || [],
+        legDistanceKm: journeyPlan.legs?.chargerToDestination?.distanceKm || (totalDist * 0.5),
+        legTravelTimeMin: journeyPlan.legs?.chargerToDestination?.travelTimeMinutes || 10,
         totalTripDistanceKm: totalDist,
         priorDistanceTraveledKm: leg1Dist,
         onLegComplete: () => handleDestinationArrival(journeyPlan),
       })
     }
-  }, [navState, journeyPlan, runDriveLeg, runChargingSimulation, handleDestinationArrival])
+  }, [navState, journeyPlan, runLegSequence, runDriveLeg, runChargingSimulation, handleDestinationArrival])
 
   // ---------------------------------------------------------------------------
-  // STEP 12: RESET
-  // Restores original Virtual EV state, resets all progress, stops intervals.
+  // RESET
   // ---------------------------------------------------------------------------
   const resetSimulation = useCallback(() => {
     stopAllTimers()
@@ -636,7 +730,10 @@ export function TripProvider({ children }) {
     tripStartTimeRef.current = null
     pausedStateRef.current = null
     chargeStepRef.current = 0
+    currentLegIdxRef.current = 0
 
+    setCurrentLegIndex(0)
+    setActiveChargingStopIndex(0)
     setNavState(journeyPlan ? (journeyPlan.decisionType === 'INFEASIBLE' ? NAV_STATE.INFEASIBLE : NAV_STATE.READY) : NAV_STATE.IDLE)
     setCurrentLeg(journeyPlan ? (journeyPlan.decisionType === 'CHARGE' ? LEG_TYPE.ORIGIN_TO_CHARGER : LEG_TYPE.DIRECT) : null)
     setLegProgressPercent(0)
@@ -663,23 +760,32 @@ export function TripProvider({ children }) {
     tripStartTimeRef.current = null
     pausedStateRef.current = null
     chargeStepRef.current = 0
+    currentLegIdxRef.current = 0
 
-    // Immediately clear old plan and route to prevent stale Plan A leaking into Plan B
     setJourneyPlan(null)
     setRouteData(null)
 
-    setNavState(NAV_STATE.PLANNING)
+    setNavState(NAV_STATE.IDLE)
     setCurrentLeg(null)
+    setCurrentLegIndex(0)
+    setActiveChargingStopIndex(0)
     setLegProgressPercent(0)
     setOverallTripProgressPercent(0)
     setSimulationProgress(0.0)
     setSimulatedChargingProgress(0)
     setChargingEnergyAddedSoFar(0.0)
     setTripSummary(null)
+    setPlanError(null)
+    setIsPlanning(false)
+    setJourneyPlan(null)
+    setRouteData(null)
 
     setDestinationState({
       latitude: parseFloat(coords.latitude.toFixed(6)),
       longitude: parseFloat(coords.longitude.toFixed(6)),
+      name: coords.name || coords.displayName || null,
+      address: coords.address || coords.formattedAddress || null,
+      placeId: coords.placeId || null,
     })
     setIsSelectingDestination(false)
   }, [])
@@ -691,9 +797,12 @@ export function TripProvider({ children }) {
     tripStartTimeRef.current = null
     pausedStateRef.current = null
     chargeStepRef.current = 0
+    currentLegIdxRef.current = 0
 
     setNavState(NAV_STATE.IDLE)
     setCurrentLeg(null)
+    setCurrentLegIndex(0)
+    setActiveChargingStopIndex(0)
     setLegProgressPercent(0)
     setOverallTripProgressPercent(0)
     setSimulationProgress(0.0)
@@ -708,7 +817,6 @@ export function TripProvider({ children }) {
     setIsPlanning(false)
     setRouteData(null)
 
-    // Stop active drive, reset recorder, and return vehicle to parked standby
     tripRecorder.resetTrip()
     updateTelemetry({
       speed_kmph: 0.0,
@@ -729,20 +837,18 @@ export function TripProvider({ children }) {
     if (navState === NAV_STATE.DRIVING || navState === NAV_STATE.DRIVING_LEG_1 || navState === NAV_STATE.DRIVING_LEG_2) {
       return 'driving'
     }
-    if (navState === NAV_STATE.CHARGING) {
-      return 'charging'
-    }
-    if (navState === NAV_STATE.PAUSED) {
-      return 'paused'
-    }
-    if (navState === NAV_STATE.COMPLETED) {
-      return 'completed'
-    }
-    if (navState === NAV_STATE.READY) {
-      return 'ready'
-    }
+    if (navState === NAV_STATE.CHARGING) return 'charging'
+    if (navState === NAV_STATE.PAUSED) return 'paused'
+    if (navState === NAV_STATE.COMPLETED) return 'completed'
+    if (navState === NAV_STATE.READY) return 'ready'
     return 'idle'
   }, [navState])
+
+  // Active charging stop being simulated (for UI display during CHARGING state)
+  const activeChargingStop = useMemo(() => {
+    if (!journeyPlan?.chargingStops) return null
+    return journeyPlan.chargingStops[activeChargingStopIndex] || null
+  }, [journeyPlan, activeChargingStopIndex])
 
   const value = {
     trip,
@@ -758,9 +864,12 @@ export function TripProvider({ children }) {
     isPlanning,
     planError,
     planJourneyAction: executePlanJourney,
-    // Change 23 Navigation State Machine & Multi-Leg Tracking
+    // Change 23 / 28 Navigation State Machine & Multi-Leg Tracking
     navState,
     currentLeg,
+    currentLegIndex,
+    activeChargingStopIndex,
+    activeChargingStop,
     legProgressPercent,
     overallTripProgressPercent,
     simulatedChargingProgress,

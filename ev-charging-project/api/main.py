@@ -41,6 +41,21 @@ from joint_route_charging_engine import (  # noqa: E402
     evaluate_joint_route_and_charging,
 )
 from modified_astar import RoutingGraph  # noqa: E402
+from operational_safety import (  # noqa: E402
+    OperationalStatus,
+    OperationalPolicy,
+    FeedbackResult,
+    ChargingFeedbackEvent,
+    global_feedback_manager,
+    check_operational_eligibility,
+    compute_station_trust_score,
+)
+from multi_stop_planner import (  # noqa: E402
+    MultiStopTripPlanner,
+    MultiStopPlanResult,
+    ChargingStopDetail,
+    JourneyLeg,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +188,7 @@ class ChargerRecommendation(BaseModel):
     travel_time_minutes: float = Field(..., description="Estimated road driving travel time in minutes")
     reliability: float = Field(..., description="Predicted historical reliability score [0.0 - 1.0]")
     probability_available: float = Field(..., description="Predicted availability probability [0.0 - 1.0]")
+    availability: Optional[float] = Field(default=None, description="Operational port availability probability [0.0 - 1.0]")
     estimated_charging_time_minutes: float = Field(..., description="Estimated charging duration in minutes")
     estimated_cost_inr: float = Field(..., description="Estimated charging cost in INR")
     compatible: bool = Field(..., description="Whether the charger matches the requested connector standard")
@@ -180,6 +196,12 @@ class ChargerRecommendation(BaseModel):
     normalized_distance: Optional[float] = Field(default=None, description="Normalized distance penalty [0.0 - 1.0]")
     normalized_cost: Optional[float] = Field(default=None, description="Normalized cost penalty [0.0 - 1.0]")
     normalized_charging_time: Optional[float] = Field(default=None, description="Normalized charging time penalty [0.0 - 1.0]")
+    operational_status: str = Field(default="AVAILABLE", description="Operational status (AVAILABLE, DEGRADED, OUT_OF_SERVICE, MAINTENANCE, UNKNOWN)")
+    status_confidence: float = Field(default=1.0, description="Confidence in operational availability [0.0 - 1.0]")
+    status_last_updated: Optional[str] = Field(default=None, description="ISO timestamp of latest operational telemetry update")
+    eligible_for_planning: bool = Field(default=True, description="Whether station passed operational eligibility gate")
+    rejection_reason: Optional[str] = Field(default=None, description="Reason if station was rejected by operational gate")
+    trust_score: Optional[float] = Field(default=None, description="Composite station trust score [0.0 - 1.0]")
     final_score: float = Field(..., description="Multi-criteria optimization final score")
 
 
@@ -256,6 +278,11 @@ class ChargerCandidateInput(BaseModel):
     probability_available: float = Field(default=0.80, ge=0.0, le=1.0, description="Availability probability [0.0 - 1.0]")
     charging_wait_minutes: Optional[float] = Field(default=None, ge=0.0, description="Explicit queue wait minutes if known")
     estimated_charging_time_minutes: Optional[float] = Field(default=None, ge=0.0, description="Explicit charging session duration if known")
+    operational_status: Optional[str] = Field(default="AVAILABLE", description="Operational status: AVAILABLE, DEGRADED, OUT_OF_SERVICE, MAINTENANCE, UNKNOWN")
+    status_confidence: Optional[float] = Field(default=1.0, description="Status confidence [0.0 - 1.0]")
+    status_last_updated: Optional[str] = Field(default=None, description="ISO timestamp of status update")
+    eligible_for_planning: Optional[bool] = Field(default=True, description="Whether eligible for planning")
+    rejection_reason: Optional[str] = Field(default=None, description="Rejection reason if ineligible")
 
 
 class TripPlanRequest(BaseModel):
@@ -278,6 +305,10 @@ class TripPlanRequest(BaseModel):
     candidate_chargers: Optional[List[ChargerCandidateInput]] = Field(
         default=None,
         description="Optional explicit candidate chargers. If omitted, candidates are loaded from database recommendations.",
+    )
+    multi_stop: Optional[bool] = Field(
+        default=None,
+        description="Whether to use Change 28 Automatic Multi-Stop Journey Planner. Defaults to False for legacy compatibility.",
     )
 
 
@@ -342,11 +373,27 @@ class TripPlanResponse(BaseModel):
     vehicle_id: str = Field(..., description="Vehicle identifier")
     origin: Dict[str, float] = Field(..., description="Origin coordinates {latitude, longitude}")
     destination: Dict[str, float] = Field(..., description="Destination coordinates {latitude, longitude}")
+
+    # Section 16 Multi-Stop Fields
+    total_distance_km: Optional[float] = Field(default=None, description="Total journey distance in km")
+    total_energy_kwh: Optional[float] = Field(default=None, description="Total journey energy consumption in kWh")
+    total_travel_time_minutes: Optional[float] = Field(default=None, description="Total travel time in minutes")
+    charging_stop_count: int = Field(default=0, description="Total number of charging stops")
+    charging_stops: List[Dict[str, Any]] = Field(default_factory=list, description="Ordered list of charging stops (Section 16)")
+    total_charging_wait_minutes: float = Field(default=0.0, description="Total planned queue wait time in minutes")
+    total_charging_duration_minutes: float = Field(default=0.0, description="Total planned charging duration in minutes")
+    total_cost: float = Field(default=0.0, description="Total journey cost metric")
+    feasible: bool = Field(default=True, description="Physical and operational feasibility of journey")
+    algorithm_used: str = Field(default="Automatic Multi-Stop Energy-Aware EV Journey Planner (Change 28)", description="Planner algorithm name")
+
+    # Route Legs: In Section 16 this is a List[Dict[str, Any]]. In legacy Change 19/20, this was Dict[str, Optional[LegDetail]].
+    legs: Any = Field(..., description="Leg details (Section 16 list or legacy dict)")
+
+    # Legacy fields
     selected_charger: Optional[SelectedChargerInfo] = Field(default=None, description="Selected charging stop details (null for DIRECT)")
-    route: RouteMetrics = Field(..., description="Overall journey route metrics and cost")
-    legs: Dict[str, Optional[LegDetail]] = Field(..., description="Leg details for direct, origin_to_charger, charger_to_destination")
-    energy: EnergyAccounting = Field(..., description="Comprehensive battery energy ledger")
-    algorithm: AlgorithmInfo = Field(default_factory=AlgorithmInfo, description="Algorithms used for decision")
+    route: Optional[RouteMetrics] = Field(default=None, description="Overall journey route metrics and cost")
+    energy: Optional[EnergyAccounting] = Field(default=None, description="Comprehensive battery energy ledger")
+    algorithm: Optional[AlgorithmInfo] = Field(default_factory=AlgorithmInfo, description="Algorithms used for decision")
     ai_energy_prediction: Optional[AIEnergyPredictionInfo] = Field(default=None, description="AI-informed energy prediction diagnostics (Change 24)")
     explanation: str = Field(..., description="Human-readable rationale for the selected plan")
     candidate_count_evaluated: int = Field(default=0, description="Total candidate chargers evaluated")
@@ -367,6 +414,8 @@ def root() -> Dict[str, str]:
         "energy_predict_trip": "/energy/predict/trip",
         "energy_predict_near_term": "/energy/predict/near-term",
         "trip_plan": "/trip/plan",
+        "charger_feedback": "/chargers/{charger_id}/feedback",
+        "charger_operational_status": "/chargers/{charger_id}/operational-status",
     }
 
 
@@ -565,10 +614,15 @@ def plan_trip(request: TripPlanRequest) -> TripPlanResponse:
                         probability_available=c.probability_available,
                         charging_wait_minutes=c.charging_wait_minutes,
                         estimated_charging_time_minutes=c.estimated_charging_time_minutes,
+                        operational_status=c.operational_status or "AVAILABLE",
+                        status_confidence=c.status_confidence if c.status_confidence is not None else 1.0,
+                        status_last_updated=c.status_last_updated,
+                        eligible_for_planning=c.eligible_for_planning if c.eligible_for_planning is not None else True,
+                        rejection_reason=c.rejection_reason,
                     )
                 )
-        else:
-            # Attempt to query database recommendations if available
+        elif not request.multi_stop:
+            # Attempt to query database recommendations for single-point search
             try:
                 recs = score_and_rank_chargers(
                     user_lat=request.origin_latitude,
@@ -596,12 +650,124 @@ def plan_trip(request: TripPlanRequest) -> TripPlanResponse:
                             reliability=float(r.get("reliability", 0.9)),
                             probability_available=float(r.get("probability_available", 0.8)),
                             estimated_charging_time_minutes=float(r.get("estimated_charging_time_minutes", 30.0)),
+                            operational_status=str(r.get("operational_status", "AVAILABLE")),
+                            status_confidence=float(r.get("status_confidence", 1.0)),
+                            status_last_updated=r.get("status_last_updated"),
+                            eligible_for_planning=bool(r.get("eligible_for_planning", True)),
+                            rejection_reason=r.get("rejection_reason"),
                         )
                     )
             except Exception:
                 candidates = []
 
-        # 3. Direct Route Calculation
+        # Check if Multi-Stop Journey Planner is requested (Change 28)
+        if request.multi_stop is True:
+            def trip_energy_predictor(trip_dict: Dict[str, Any]) -> Dict[str, Any]:
+                trip_dict["driving_style"] = request.driving_style or "Normal"
+                trip_dict["weather_condition"] = request.weather_condition or "Clear"
+                return energy_prediction_service.predict_trip_energy(trip_dict)
+
+            planner = MultiStopTripPlanner(
+                energy_rate_kwh_per_km=request.energy_consumption_kwh_per_km,
+                operational_policy=OperationalPolicy(),
+            )
+            cands_for_planner = candidates if len(candidates) > 0 else None
+            multi_plan = planner.plan_journey(
+                origin_lat=request.origin_latitude,
+                origin_lon=request.origin_longitude,
+                dest_lat=request.destination_latitude,
+                dest_lon=request.destination_longitude,
+                vehicle_state=vehicle_state,
+                candidate_chargers=cands_for_planner,
+                target_soc_percent=request.target_soc_percent,
+                ai_energy_predictor=trip_energy_predictor,
+            )
+
+            stops_dicts = [s.to_dict() for s in multi_plan.charging_stops]
+            legs_list = [l.to_dict() for l in multi_plan.legs]
+
+            first_charger = None
+            if len(multi_plan.charging_stops) > 0:
+                s0 = multi_plan.charging_stops[0]
+                first_charger = SelectedChargerInfo(
+                    id=s0.charger_id,
+                    name=s0.charger_name,
+                    latitude=s0.latitude,
+                    longitude=s0.longitude,
+                    connector=request.connector_type,
+                    reliability=s0.reliability,
+                    availability=s0.availability,
+                    charging_power_kw=s0.charging_power_kw,
+                )
+
+            route_metrics = RouteMetrics(
+                total_distance_km=multi_plan.total_distance_km,
+                total_energy_kwh=multi_plan.total_energy_kwh,
+                total_traffic_delay_minutes=0.0,
+                charging_wait_minutes=multi_plan.total_charging_wait_minutes,
+                charging_duration_minutes=multi_plan.total_charging_duration_minutes,
+                total_cost=multi_plan.total_cost,
+                cost_breakdown=None,
+            )
+
+            energy_accounting = EnergyAccounting(
+                starting_energy_kwh=round(multi_plan.starting_energy_kwh, 3),
+                energy_required_kwh=round(multi_plan.total_energy_kwh, 3),
+                arrival_energy_kwh=round(multi_plan.final_arrival_energy_kwh, 3),
+                energy_added_kwh=round(sum(s.energy_added_kwh for s in multi_plan.charging_stops), 3),
+                departure_energy_kwh=round(
+                    vehicle_state.battery_capacity_kwh * (request.target_soc_percent / 100.0)
+                    if multi_plan.charging_stops else vehicle_state.current_energy_kwh,
+                    3,
+                ),
+                reserve_energy_kwh=round(multi_plan.reserve_energy_kwh, 3),
+            )
+
+            ai_info = None
+            if multi_plan.ai_energy_prediction:
+                ai_data = multi_plan.ai_energy_prediction
+                ai_info = AIEnergyPredictionInfo(
+                    available=bool(ai_data.get("available", False)),
+                    model=str(ai_data.get("model", "XGBoost")),
+                    predicted_energy_kwh=ai_data.get("predicted_energy_kwh"),
+                    baseline_energy_kwh=float(ai_data.get("baseline_energy_kwh", multi_plan.total_energy_kwh)),
+                    delta_kwh=ai_data.get("delta_kwh"),
+                    delta_percent=ai_data.get("delta_percent"),
+                    used_for_planning=bool(ai_data.get("used_for_planning", True)),
+                    used_for_battery_state=False,
+                )
+
+            return TripPlanResponse(
+                success=multi_plan.success,
+                decision_type=multi_plan.decision_type,
+                vehicle_id=request.vehicle_id,
+                origin={"latitude": request.origin_latitude, "longitude": request.origin_longitude},
+                destination={"latitude": request.destination_latitude, "longitude": request.destination_longitude},
+                total_distance_km=multi_plan.total_distance_km,
+                total_energy_kwh=multi_plan.total_energy_kwh,
+                total_travel_time_minutes=multi_plan.total_travel_time_minutes,
+                charging_stop_count=multi_plan.charging_stop_count,
+                charging_stops=stops_dicts,
+                total_charging_wait_minutes=multi_plan.total_charging_wait_minutes,
+                total_charging_duration_minutes=multi_plan.total_charging_duration_minutes,
+                total_cost=multi_plan.total_cost,
+                feasible=multi_plan.feasible,
+                algorithm_used=multi_plan.algorithm_used,
+                legs=legs_list,
+                selected_charger=first_charger,
+                route=route_metrics,
+                energy=energy_accounting,
+                algorithm=AlgorithmInfo(
+                    route_search="Modified Energy-Aware A* (Change 18B)",
+                    planning_engine="Automatic Multi-Stop Energy-Aware EV Journey Planner (Change 28)",
+                    energy_prediction="XGBoost Whole-Trip Predictor (Change 24)",
+                ),
+                ai_energy_prediction=ai_info,
+                explanation=multi_plan.explanation,
+                candidate_count_evaluated=multi_plan.candidate_count_evaluated,
+            )
+
+        # 3. Direct Route Calculation (Legacy Single-Stop Path)
         direct_route_info = get_road_route(
             user_lat=request.origin_latitude,
             user_lon=request.origin_longitude,
@@ -688,6 +854,7 @@ def plan_trip(request: TripPlanRequest) -> TripPlanResponse:
             "charger_to_destination": None,
         }
 
+        matched = None
         if plan_res.decision_type == "CHARGE" and plan_res.selected_charger_id:
             matched = next((c for c in candidates if c.charger_id == plan_res.selected_charger_id), None)
             if matched and matched.latitude is not None and matched.longitude is not None:
@@ -770,12 +937,53 @@ def plan_trip(request: TripPlanRequest) -> TripPlanResponse:
                 f"the AI estimate contributes to route ranking."
             )
 
+        # Assemble Section 16 charging stops list for legacy path
+        legacy_stops: List[Dict[str, Any]] = []
+        if plan_res.decision_type == "CHARGE" and selected_charger_info and matched:
+            l1_dist = legs_map["origin_to_charger"].distance_km if legs_map.get("origin_to_charger") else 0.0
+            l1_egy = legs_map["origin_to_charger"].energy_kwh if legs_map.get("origin_to_charger") else 0.0
+            legacy_stops.append({
+                "stop_index": 1,
+                "charger_id": selected_charger_info.id,
+                "charger_name": selected_charger_info.name,
+                "latitude": selected_charger_info.latitude,
+                "longitude": selected_charger_info.longitude,
+                "operational_status": getattr(matched, "operational_status", "AVAILABLE"),
+                "status_confidence": getattr(matched, "status_confidence", 1.0),
+                "reliability": selected_charger_info.reliability,
+                "availability": selected_charger_info.availability,
+                "charging_power_kw": selected_charger_info.charging_power_kw,
+                "arrival_energy_kwh": round(plan_res.arrival_energy_before_charging_kwh, 3),
+                "energy_added_kwh": round(plan_res.energy_added_at_charger_kwh, 3),
+                "departure_energy_kwh": round(plan_res.post_charge_energy_kwh, 3),
+                "expected_wait_minutes": round(plan_res.estimated_charging_wait_minutes, 1),
+                "charging_duration_minutes": round(plan_res.estimated_charging_duration_minutes, 1),
+                "diversion_distance_km": round(max(0.0, plan_res.total_distance_km - direct_leg.distance_km), 2),
+                "leg_distance_km": round(l1_dist, 1),
+                "leg_energy_kwh": round(l1_egy, 3),
+            })
+
+        driving_time = direct_leg.travel_time_minutes
+        if legs_map.get("origin_to_charger") and legs_map.get("charger_to_destination"):
+            driving_time = legs_map["origin_to_charger"].travel_time_minutes + legs_map["charger_to_destination"].travel_time_minutes
+        total_trip_time = round(driving_time + plan_res.estimated_charging_wait_minutes + plan_res.estimated_charging_duration_minutes, 1)
+
         return TripPlanResponse(
             success=(plan_res.decision_type != "INFEASIBLE"),
             decision_type=plan_res.decision_type,
             vehicle_id=request.vehicle_id,
             origin={"latitude": request.origin_latitude, "longitude": request.origin_longitude},
             destination={"latitude": request.destination_latitude, "longitude": request.destination_longitude},
+            total_distance_km=plan_res.total_distance_km,
+            total_energy_kwh=plan_res.total_energy_kwh,
+            total_travel_time_minutes=total_trip_time,
+            charging_stop_count=len(legacy_stops),
+            charging_stops=legacy_stops,
+            total_charging_wait_minutes=plan_res.estimated_charging_wait_minutes,
+            total_charging_duration_minutes=plan_res.estimated_charging_duration_minutes,
+            total_cost=plan_res.total_route_cost,
+            feasible=(plan_res.decision_type != "INFEASIBLE"),
+            algorithm_used="Joint Route + Charging Decision Engine (Change 19)",
             selected_charger=selected_charger_info,
             route=route_metrics,
             legs=legs_map,
@@ -797,6 +1005,107 @@ def plan_trip(request: TripPlanRequest) -> TripPlanResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal journey planning failure: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Charger Operational Safety & Feedback Endpoints (Change 27)
+# ---------------------------------------------------------------------------
+class FeedbackSubmissionRequest(BaseModel):
+    result: str = Field(
+        ...,
+        description="Charging attempt outcome: SUCCESSFUL_CHARGE, STATION_UNAVAILABLE, CHARGER_FAULT, CONNECTOR_PROBLEM, OTHER",
+        examples=["SUCCESSFUL_CHARGE"],
+    )
+    vehicle_id: Optional[str] = Field(default=None, description="Optional vehicle identifier")
+    session_id: Optional[str] = Field(default=None, description="Optional charging session ID")
+    notes: Optional[str] = Field(default=None, description="Optional user comments or observations")
+
+
+@app.post(
+    "/chargers/{charger_id}/feedback",
+    summary="Submit Charging Attempt User Feedback",
+)
+def submit_charger_feedback(charger_id: str, request: FeedbackSubmissionRequest) -> Dict[str, Any]:
+    """
+    Submit user feedback for an attempted charging session.
+    Recent repeated negative reports decrease station confidence and may trigger temporary safety exclusion.
+    """
+    res_str = request.result.strip().upper()
+    try:
+        fb_result = FeedbackResult(res_str)
+    except ValueError:
+        valid_opts = [e.value for e in FeedbackResult]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid feedback result '{request.result}'. Must be one of: {valid_opts}",
+        )
+
+    event = ChargingFeedbackEvent(
+        charger_id=charger_id,
+        result=fb_result,
+        vehicle_id=request.vehicle_id,
+        session_id=request.session_id,
+        notes=request.notes,
+    )
+    global_feedback_manager.record_feedback(event)
+    summary = global_feedback_manager.get_feedback_summary(charger_id)
+
+    # Re-evaluate operational status given new feedback
+    elig = check_operational_eligibility(
+        {"charger_id": charger_id},
+        feedback_mgr=global_feedback_manager,
+    )
+
+    return {
+        "status": "success",
+        "message": f"Feedback successfully recorded for charger {charger_id}.",
+        "event": event.to_dict(),
+        "operational_status": elig.operational_status.value,
+        "status_confidence": elig.status_confidence,
+        "eligible_for_planning": elig.eligible,
+        "rejection_reason": elig.rejection_reason,
+        "feedback_summary": summary,
+        "data_honesty_note": elig.data_honesty_note,
+    }
+
+
+@app.get(
+    "/chargers/{charger_id}/operational-status",
+    summary="Get Charger Operational Status & Trust Metrics",
+)
+def get_charger_operational_status(charger_id: str) -> Dict[str, Any]:
+    """
+    Query normalized operational status, confidence, trust score, and feedback summary.
+    Discloses that data represents operational confidence based on latest available data.
+    """
+    row_data: Dict[str, Any] = {"charger_id": charger_id}
+    try:
+        df = load_charger_data()
+        matching = df[df["id"].astype(str) == str(charger_id)]
+        if not matching.empty:
+            row_data = dict(matching.iloc[0])
+            row_data["charger_id"] = charger_id
+    except Exception:
+        pass
+
+    elig = check_operational_eligibility(
+        row_data,
+        feedback_mgr=global_feedback_manager,
+    )
+    summary = global_feedback_manager.get_feedback_summary(charger_id)
+
+    return {
+        "charger_id": charger_id,
+        "operational_status": elig.operational_status.value,
+        "status_confidence": elig.status_confidence,
+        "status_last_updated": elig.status_last_updated_iso,
+        "status_age_hours": elig.status_age_hours,
+        "trust_score": elig.trust_score,
+        "eligible_for_planning": elig.eligible,
+        "rejection_reason": elig.rejection_reason,
+        "feedback_summary": summary,
+        "data_honesty_note": elig.data_honesty_note,
+    }
 
 
 # ---------------------------------------------------------------------------

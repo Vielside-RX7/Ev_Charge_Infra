@@ -91,6 +91,11 @@ class ChargerCandidate:
     charging_wait_minutes: Optional[float] = None
     estimated_charging_time_minutes: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    operational_status: str = "AVAILABLE"
+    status_confidence: float = 1.0
+    status_last_updated: Optional[str] = None
+    eligible_for_planning: bool = True
+    rejection_reason: Optional[str] = None
 
     def get_queue_wait_minutes(self) -> float:
         """
@@ -357,6 +362,24 @@ def evaluate_joint_route_and_charging(
     evaluated_candidates: List[Dict[str, Any]] = []
 
     for c in charger_candidates:
+        # Operational Safety Gate (Change 27)
+        op_status = getattr(c, "operational_status", "AVAILABLE")
+        is_op_eligible = getattr(c, "eligible_for_planning", True)
+        if not is_op_eligible or op_status in ("OUT_OF_SERVICE", "MAINTENANCE", "FAULTED", "UNAVAILABLE"):
+            rej_reason = (
+                getattr(c, "rejection_reason", None)
+                or f"Charger {c.name} rejected by operational safety gate: status={op_status}."
+            )
+            evaluated_candidates.append({
+                "charger_id": c.charger_id,
+                "name": c.name,
+                "feasible": False,
+                "rejection_stage": "operational_safety_gate",
+                "operational_status": op_status,
+                "reason": rej_reason,
+            })
+            continue
+
         c_node = c.node_id or c.charger_id
 
         # Leg 1: Origin -> Charger
