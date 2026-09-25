@@ -9,6 +9,7 @@ import RecommendationForm from './components/RecommendationForm'
 import MapView from './components/MapView'
 import ResultsList from './components/ResultsList'
 import NavigationView from './components/NavigationView'
+import StationConsole from './components/StationConsole'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -84,12 +85,34 @@ function CockpitContent({
 }
 
 function App() {
+  const [currentRoute, setCurrentRoute] = useState(
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/station')
+      ? '/station'
+      : '/'
+  )
   const [results, setResults] = useState(null)
   const [userLocation, setUserLocation] = useState(null)
   const [selectedChargerId, setSelectedChargerId] = useState(null)
   const [navigatingCharger, setNavigatingCharger] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const handlePopState = () => {
+      if (window.location.pathname.startsWith('/station')) {
+        setCurrentRoute('/station')
+      } else {
+        setCurrentRoute('/')
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  const navigateTo = (path) => {
+    window.history.pushState({}, '', path)
+    setCurrentRoute(path)
+  }
 
   // Subtle clock for cockpit header
   const [currentTime, setCurrentTime] = useState(
@@ -176,6 +199,16 @@ function App() {
     setNavigatingCharger(null)
   }
 
+  // Render Station Console if route is /station
+  if (currentRoute === '/station') {
+    return (
+      <StationConsole
+        defaultStationId="7"
+        onNavigateToDriver={() => navigateTo('/')}
+      />
+    )
+  }
+
   return (
     <VehicleProfileProvider>
       <TelemetryProvider>
@@ -204,8 +237,16 @@ function App() {
                   </span>
                 </div>
 
-                {/* Status & Region */}
+                {/* Status, Region & Switch to Station Console */}
                 <div className="flex items-center gap-3 text-xs text-slate-400 font-mono tabular-nums">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('/station')}
+                    className="btn-secondary text-[11px] px-2.5 py-1 font-sans font-medium text-slate-300 hover:text-white"
+                  >
+                    Station Console ↗
+                  </button>
+                  <span className="text-slate-600">·</span>
                   <span>{currentTime}</span>
                   <span className="text-slate-600">·</span>
                   <span className="text-slate-300">Mysuru Region</span>
@@ -222,6 +263,7 @@ function App() {
               error={error}
               handleFormSubmit={handleFormSubmit}
               handleSelectCharger={handleSelectCharger}
+
               handleStartNavigation={handleStartNavigation}
             />
 

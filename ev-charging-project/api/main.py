@@ -56,6 +56,13 @@ from multi_stop_planner import (  # noqa: E402
     ChargingStopDetail,
     JourneyLeg,
 )
+from station_telemetry import (  # noqa: E402
+    TelemetrySource,
+    StationOperationalState,
+    StationTelemetryRecord,
+    global_station_telemetry_provider,
+    get_station_telemetry_with_eligibility,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1112,114 @@ def get_charger_operational_status(charger_id: str) -> Dict[str, Any]:
         "rejection_reason": elig.rejection_reason,
         "feedback_summary": summary,
         "data_honesty_note": elig.data_honesty_note,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Station Console & Telemetry Interface Endpoints (Change 30)
+# ---------------------------------------------------------------------------
+class StationSimulationRequest(BaseModel):
+    action: str = Field(
+        ...,
+        description="Simulation action: START_CHARGING, STOP_CHARGING, COMPLETE_SESSION, SIMULATE_FAULT, RESTORE_AVAILABLE",
+        examples=["START_CHARGING"],
+    )
+    fault_code: Optional[str] = Field(
+        default="OVERCURRENT_TRIP",
+        description="Fault code to inject when action is SIMULATE_FAULT (e.g. OVERCURRENT_TRIP, INA219_COMM_LOSS, RELAY_WELD_DETECTED)",
+    )
+
+
+class HardwareTelemetryIngestRequest(BaseModel):
+    station_id: str = Field(..., description="Unique hardware station identifier", examples=["7"])
+    state: str = Field(default="AVAILABLE", description="Hardware state: AVAILABLE, CHARGING, COMPLETE, FAULTED")
+    voltage_v: float = Field(default=0.0, description="Bus voltage in Volts (measured if sensor present, or nominal)")
+    current_a: float = Field(default=0.0, description="Shunt current in Amperes (measured if sensor present, or nominal)")
+    power_w: Optional[float] = Field(default=None, description="Active power in Watts (voltage * current if omitted)")
+    energy_wh: float = Field(default=0.0, description="Integrated session energy in Watt-hours")
+    fault: bool = Field(default=False, description="Hardware fault trigger flag")
+    fault_code: Optional[str] = Field(default=None, description="Specific hardware fault diagnostics code")
+    controller_connected: bool = Field(default=True, description="ESP32 microcontroller connectivity status")
+    telemetry_connected: bool = Field(default=False, description="Physical sensor communication status (e.g. False without INA219)")
+    relay_closed: bool = Field(default=False, description="Main charging power contactor / MOSFET physical state")
+    source: str = Field(default="HARDWARE", description="Telemetry origin (HARDWARE or SIMULATED)")
+    telemetry_quality: Optional[str] = Field(default=None, description="Electrical measurement quality: MEASURED, NOMINAL, SIMULATED")
+    timestamp: Optional[str] = Field(default=None, description="ISO timestamp from hardware clock / NTP")
+
+
+@app.get(
+    "/station/{station_id}/telemetry",
+    summary="Get Live Station Electrical Telemetry & Operational State",
+)
+def get_station_telemetry(station_id: str) -> Dict[str, Any]:
+    """
+    Returns unified real-time electrical telemetry, session tracking, hardware health,
+    and authoritative operational eligibility status for the Station Console.
+    Source-agnostic: consumes from either simulated provider or physical hardware provider.
+    """
+    return get_station_telemetry_with_eligibility(station_id, provider=global_station_telemetry_provider)
+
+
+@app.post(
+    "/station/{station_id}/simulate",
+    summary="Execute Station State Machine Simulation Transition",
+)
+def simulate_station_action(station_id: str, request: StationSimulationRequest) -> Dict[str, Any]:
+    """
+    Transitions station simulated state (START_CHARGING, STOP_CHARGING, COMPLETE_SESSION,
+    SIMULATE_FAULT, RESTORE_AVAILABLE) and synchronizes with operational safety gate.
+    For development and testing before physical ESP32 hardware is connected.
+    """
+    try:
+        global_station_telemetry_provider.update_simulated_state(
+            station_id=station_id,
+            action=request.action,
+            params={"fault_code": request.fault_code},
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    return get_station_telemetry_with_eligibility(station_id, provider=global_station_telemetry_provider)
+
+
+@app.post(
+    "/station/telemetry/ingest",
+    summary="Ingest Real Hardware Telemetry (ESP32 / INA219 / Contactor)",
+)
+def ingest_hardware_telemetry(request: HardwareTelemetryIngestRequest) -> Dict[str, Any]:
+    """
+    Hardware-ready ingestion endpoint for physical ESP32 controller.
+    Validates hardware payload contract, records sensor readings, and synchronizes operational state.
+    """
+    payload = request.model_dump()
+    global_station_telemetry_provider.ingest_telemetry(payload)
+    return get_station_telemetry_with_eligibility(request.station_id, provider=global_station_telemetry_provider)
+
+
+@app.get(
+    "/station/stations",
+    summary="List Station Console Available Stations",
+)
+def list_station_console_stations() -> Dict[str, Any]:
+    """
+    Returns available station identities for the Station Console with the default demo station.
+    """
+    default_id = "7"
+    default_meta = {
+        "station_id": default_id,
+        "station_name": "Grand Mercure Mysore",
+        "operator": "Zeon Charging",
+        "connector_type": "CCS (Type 2)",
+        "rated_power_kw": 120.0,
+        "city": "Mysuru",
+        "is_default": True,
+    }
+    return {
+        "default_station_id": default_id,
+        "stations": [default_meta],
     }
 
 
