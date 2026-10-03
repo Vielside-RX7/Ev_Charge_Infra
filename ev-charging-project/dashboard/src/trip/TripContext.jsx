@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import axios from 'axios'
 import { useTelemetry } from '../telemetry/TelemetryContext'
 import { useVehicleProfile } from '../telemetry/VehicleProfileContext'
 import { TRIP_STATUS, NAV_STATE, LEG_TYPE, createTripState } from './tripModel.js'
 import { tripRecorder } from './tripRecorder.js'
 import { planJourney } from './tripPlanningService.js'
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const TripContext = createContext(null)
 
@@ -409,8 +412,33 @@ export function TripProvider({ children }) {
         chargingStopCount: plan.chargingStopCount || 0,
         tripDurationSeconds: finalDuration,
       })
+
+      // Persist completed journey to backend trip ledger
+      const stopsSummary = (plan.chargingStops || [])
+        .map((s, idx) => `Stop ${idx + 1}: ${s.chargerName || 'Station'} (${s.chargingPowerKw || 50} kW)`)
+        .join(', ')
+
+      const destinationName = destination?.name || (destination ? `${destination.latitude.toFixed(4)}, ${destination.longitude.toFixed(4)}` : 'Destination')
+
+      axios.post(`${API_BASE_URL}/trips/history`, {
+        origin_name: 'Mysuru Origin',
+        origin_lat: Number(freshTelem.latitude) || 12.2958,
+        origin_lon: Number(freshTelem.longitude) || 76.6394,
+        dest_name: destinationName,
+        dest_lat: Number(destination?.latitude) || 12.2958,
+        dest_lon: Number(destination?.longitude) || 76.6394,
+        total_distance_km: totalDist,
+        total_energy_kwh: energyUsed,
+        total_travel_time_minutes: finalDuration / 60,
+        charging_stop_count: plan.chargingStopCount || 0,
+        charging_stops_summary: stopsSummary || 'Direct route (0 stops)',
+        vehicle_name: vehicleProfile?.vehicle_name || 'Tata Nexon EV Max',
+        status: 'COMPLETED',
+      }).catch((err) => {
+        console.warn('Trip history background sync notice:', err?.message)
+      })
     },
-    [updateTelemetry]
+    [updateTelemetry, destination, vehicleProfile]
   )
 
   // ---------------------------------------------------------------------------

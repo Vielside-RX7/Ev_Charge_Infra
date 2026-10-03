@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { TelemetryProvider } from './telemetry/TelemetryContext'
 import { VehicleProfileProvider } from './telemetry/VehicleProfileContext'
+import { AuthProvider, useAuth } from './auth/AuthContext'
 import { TripProvider, useTrip } from './trip/TripContext'
 import VirtualEvTelemetry from './components/VirtualEvTelemetry'
 import ActiveTripCard from './components/ActiveTripCard'
@@ -10,8 +11,43 @@ import MapView from './components/MapView'
 import ResultsList from './components/ResultsList'
 import NavigationView from './components/NavigationView'
 import StationConsole from './components/StationConsole'
+import AuthModal from './components/AuthModal'
+import UserAccountModal from './components/UserAccountModal'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+function UserNavButton() {
+  const { isAuthenticated, user, selectedVehicle, setIsAuthModalOpen, setIsAccountModalOpen } = useAuth()
+
+  if (isAuthenticated) {
+    return (
+      <button
+        type="button"
+        onClick={() => setIsAccountModalOpen(true)}
+        className="btn-secondary text-[11px] px-2.5 py-1 font-sans font-medium text-slate-200 hover:text-white flex items-center gap-1.5 border-cockpit-teal/40 bg-cockpit-teal/5"
+      >
+        <span className="w-2 h-2 rounded-full bg-cockpit-teal"></span>
+        <span>{user?.name || 'Driver'}</span>
+        {selectedVehicle && (
+          <span className="label-quiet text-[10px] hidden sm:inline font-mono">
+            ({selectedVehicle.vehicle_name.split(' ')[0]})
+          </span>
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setIsAuthModalOpen(true)}
+      className="btn-primary text-[11px] px-3 py-1 font-sans font-medium flex items-center gap-1"
+    >
+      <span>👤</span>
+      <span>Sign In</span>
+    </button>
+  )
+}
 
 function CockpitContent({
   results,
@@ -212,67 +248,74 @@ function App() {
   return (
     <VehicleProfileProvider>
       <TelemetryProvider>
-        <TripProvider>
-          <div className="min-h-screen bg-[#05070A] text-slate-100 font-sans selection:bg-cockpit-teal selection:text-black flex flex-col">
-            {/* Full-Screen Standalone Navigation Mode (if triggered directly from card) */}
-            {navigatingCharger && (
-              <NavigationView
-                charger={navigatingCharger}
+        <AuthProvider>
+          <TripProvider>
+            <div className="min-h-screen bg-[#05070A] text-slate-100 font-sans selection:bg-cockpit-teal selection:text-black flex flex-col">
+              {/* Full-Screen Standalone Navigation Mode (if triggered directly from card) */}
+              {navigatingCharger && (
+                <NavigationView
+                  charger={navigatingCharger}
+                  userLocation={userLocation}
+                  onExit={handleExitNavigation}
+                />
+              )}
+
+              {/* Apple-style Minimalist Brand Bar */}
+              <header className="sticky top-0 z-40 seamless-glass border-b border-white/5 px-6 lg:px-12 py-3.5">
+                <div className="max-w-[1680px] mx-auto flex items-center justify-between">
+                  {/* Brand Title */}
+                  <div className="flex items-center gap-2.5">
+                    <span className="font-medium text-sm tracking-tight text-white">
+                      VoltGuide
+                    </span>
+                    <span className="text-slate-600">·</span>
+                    <span className="label-quiet">
+                      Intelligent EV Navigation
+                    </span>
+                  </div>
+
+                  {/* Status, Region, Driver Control & Switch to Station Console */}
+                  <div className="flex items-center gap-3 text-xs text-slate-400 font-mono tabular-nums">
+                    <UserNavButton />
+                    <span className="text-slate-600">·</span>
+                    <button
+                      type="button"
+                      onClick={() => navigateTo('/station')}
+                      className="btn-secondary text-[11px] px-2.5 py-1 font-sans font-medium text-slate-300 hover:text-white"
+                    >
+                      Station Console ↗
+                    </button>
+                    <span className="text-slate-600 hidden sm:inline">·</span>
+                    <span className="hidden sm:inline">{currentTime}</span>
+                    <span className="text-slate-600 hidden md:inline">·</span>
+                    <span className="text-slate-300 hidden md:inline">Mysuru Region</span>
+                  </div>
+                </div>
+              </header>
+
+              {/* Cockpit Content Area */}
+              <CockpitContent
+                results={results}
                 userLocation={userLocation}
-                onExit={handleExitNavigation}
+                selectedChargerId={selectedChargerId}
+                isLoading={isLoading}
+                error={error}
+                handleFormSubmit={handleFormSubmit}
+                handleSelectCharger={handleSelectCharger}
+                handleStartNavigation={handleStartNavigation}
               />
-            )}
 
-            {/* Apple-style Minimalist Brand Bar */}
-            <header className="sticky top-0 z-40 seamless-glass border-b border-white/5 px-6 lg:px-12 py-3.5">
-              <div className="max-w-[1680px] mx-auto flex items-center justify-between">
-                {/* Brand Title */}
-                <div className="flex items-center gap-2.5">
-                  <span className="font-medium text-sm tracking-tight text-white">
-                    VoltGuide
-                  </span>
-                  <span className="text-slate-600">·</span>
-                  <span className="label-quiet">
-                    Intelligent EV Navigation
-                  </span>
-                </div>
+              {/* Account & Auth Modals */}
+              <AuthModal />
+              <UserAccountModal />
 
-                {/* Status, Region & Switch to Station Console */}
-                <div className="flex items-center gap-3 text-xs text-slate-400 font-mono tabular-nums">
-                  <button
-                    type="button"
-                    onClick={() => navigateTo('/station')}
-                    className="btn-secondary text-[11px] px-2.5 py-1 font-sans font-medium text-slate-300 hover:text-white"
-                  >
-                    Station Console ↗
-                  </button>
-                  <span className="text-slate-600">·</span>
-                  <span>{currentTime}</span>
-                  <span className="text-slate-600">·</span>
-                  <span className="text-slate-300">Mysuru Region</span>
-                </div>
-              </div>
-            </header>
-
-            {/* Cockpit Content Area */}
-            <CockpitContent
-              results={results}
-              userLocation={userLocation}
-              selectedChargerId={selectedChargerId}
-              isLoading={isLoading}
-              error={error}
-              handleFormSubmit={handleFormSubmit}
-              handleSelectCharger={handleSelectCharger}
-
-              handleStartNavigation={handleStartNavigation}
-            />
-
-            {/* Quiet Footer */}
-            <footer className="py-6 px-6 lg:px-12 border-t border-white/5 text-center label-quiet">
-              VoltGuide Navigation System · 0.150 kWh/km Deterministic Physics Baseline · XGBoost & LSTM Energy Prediction
-            </footer>
-          </div>
-        </TripProvider>
+              {/* Quiet Footer */}
+              <footer className="py-6 px-6 lg:px-12 border-t border-white/5 text-center label-quiet">
+                VoltGuide Navigation System · 0.150 kWh/km Deterministic Physics Baseline · XGBoost & LSTM Energy Prediction
+              </footer>
+            </div>
+          </TripProvider>
+        </AuthProvider>
       </TelemetryProvider>
     </VehicleProfileProvider>
   )

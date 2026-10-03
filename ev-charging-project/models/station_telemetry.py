@@ -33,6 +33,8 @@ from operational_safety import (
     map_hardware_state_to_operational_status,
     global_feedback_manager,
     parse_datetime_safe,
+    set_global_telemetry_provider,
+    normalize_station_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,6 +189,10 @@ class BaseStationTelemetryProvider:
     def get_telemetry(self, station_id: Union[int, str]) -> StationTelemetryRecord:
         raise NotImplementedError
 
+    def get_live_telemetry_if_exists(self, station_id: Union[int, str]) -> Optional[StationTelemetryRecord]:
+        """Return live telemetry record if station is currently tracked, without auto-initializing."""
+        return None
+
     def update_simulated_state(
         self,
         station_id: Union[int, str],
@@ -252,7 +258,7 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
         )
 
     def _ensure_station_exists(self, station_id: Union[int, str]) -> StationTelemetryRecord:
-        c_key = str(station_id)
+        c_key = normalize_station_id(station_id) or str(station_id)
         if c_key not in self._stations:
             # Fallback initialized station record
             self._stations[c_key] = StationTelemetryRecord(
@@ -262,6 +268,14 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
                 telemetry_quality=TelemetryQuality.SIMULATED.value,
             )
         return self._stations[c_key]
+
+    def get_live_telemetry_if_exists(self, station_id: Union[int, str]) -> Optional[StationTelemetryRecord]:
+        """Return live telemetry record if station is currently tracked, without auto-initializing."""
+        with self._lock:
+            c_key = normalize_station_id(station_id) or str(station_id)
+            if c_key in self._stations:
+                return self._stations[c_key]
+            return None
 
     def get_telemetry(self, station_id: Union[int, str]) -> StationTelemetryRecord:
         with self._lock:
@@ -417,6 +431,7 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
 # ---------------------------------------------------------------------------
 
 global_station_telemetry_provider: BaseStationTelemetryProvider = SimulatedStationTelemetryProvider()
+set_global_telemetry_provider(global_station_telemetry_provider)
 
 
 def get_station_telemetry_with_eligibility(
@@ -464,6 +479,7 @@ def get_station_telemetry_with_eligibility(
         gate_data,
         policy=policy,
         feedback_mgr=global_feedback_manager,
+        telemetry_provider=provider,
     )
 
     result = dict(raw_dict)

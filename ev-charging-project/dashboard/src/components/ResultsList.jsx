@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
+import ReviewsModal from './ReviewsModal'
 
 export default function ResultsList({
   results,
@@ -8,6 +9,8 @@ export default function ResultsList({
   onSelectCharger,
   onStartNavigation,
 }) {
+  const [activeReviewCharger, setActiveReviewCharger] = useState(null)
+
   useEffect(() => {
     if (selectedChargerId) {
       const cardEl = document.getElementById(`charger-card-${selectedChargerId}`)
@@ -96,17 +99,29 @@ export default function ResultsList({
             </span>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-2 flex items-center gap-3">
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
                 if (onStartNavigation) onStartNavigation(optimalStop)
               }}
-              className="btn-primary px-7 py-2.5 text-xs flex items-center gap-2 cursor-pointer shadow-sm"
+              className="btn-primary px-6 py-2 text-xs flex items-center gap-2 cursor-pointer shadow-sm"
             >
               <span>Navigate to {optimalStop.name.split(' ')[0]}</span>
               <span>→</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setActiveReviewCharger(optimalStop)
+              }}
+              className="btn-secondary px-3.5 py-2 text-xs text-amber-300 border-amber-400/20 hover:bg-amber-400/10 flex items-center gap-1.5"
+            >
+              <span>★</span>
+              <span>Reviews</span>
             </button>
           </div>
         </div>
@@ -143,21 +158,45 @@ export default function ResultsList({
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (onStartNavigation) onStartNavigation(charger)
-                    }}
-                    className="text-xs text-cockpit-teal hover:underline cursor-pointer shrink-0"
-                  >
-                    Select →
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setActiveReviewCharger(charger)
+                      }}
+                      className="text-xs text-amber-300/80 hover:text-amber-200 px-2 py-1 rounded hover:bg-white/5 transition flex items-center gap-1"
+                      title="Read & Submit Reviews"
+                    >
+                      <span>★</span>
+                      <span className="hidden sm:inline">Reviews</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (onStartNavigation) onStartNavigation(charger)
+                      }}
+                      className="text-xs text-cockpit-teal hover:underline cursor-pointer shrink-0"
+                    >
+                      Select →
+                    </button>
+                  </div>
                 </div>
               )
             })}
           </div>
         </div>
+      )}
+
+      {/* Community Reviews Modal */}
+      {activeReviewCharger && (
+        <ReviewsModal
+          charger={activeReviewCharger}
+          isOpen={Boolean(activeReviewCharger)}
+          onClose={() => setActiveReviewCharger(null)}
+        />
       )}
     </div>
   )

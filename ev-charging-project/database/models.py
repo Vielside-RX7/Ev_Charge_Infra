@@ -88,6 +88,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=True)
     vehicle_model = Column(String(255), nullable=True)
     battery_capacity_kwh = Column(Float, nullable=True)
     preferred_connector_type = Column(String(100), nullable=True)
@@ -95,10 +96,58 @@ class User(Base):
 
     # Relationships
     sessions = relationship("ChargingSession", back_populates="user")
-    reviews = relationship("Review", back_populates="user")
+    reviews = relationship("Review", back_populates="user", cascade="all, delete-orphan")
+    vehicles = relationship("UserVehicle", back_populates="user", cascade="all, delete-orphan")
+    trip_histories = relationship("TripHistory", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}')>"
+
+
+class UserVehicle(Base):
+    __tablename__ = "user_vehicles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    vehicle_name = Column(String(255), nullable=False)
+    battery_capacity_kwh = Column(Float, nullable=False, default=30.0)
+    connector_type = Column(String(100), nullable=False, default="CCS2")
+    energy_consumption_kwh_per_km = Column(Float, nullable=False, default=0.15)
+    is_selected = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="vehicles")
+
+    def __repr__(self):
+        return f"<UserVehicle(id={self.id}, user_id={self.user_id}, name='{self.vehicle_name}', selected={self.is_selected})>"
+
+
+class TripHistory(Base):
+    __tablename__ = "trip_histories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    vehicle_name = Column(String(255), nullable=True)
+    origin_name = Column(String(255), nullable=False)
+    origin_lat = Column(Float, nullable=False)
+    origin_lon = Column(Float, nullable=False)
+    dest_name = Column(String(255), nullable=False)
+    dest_lat = Column(Float, nullable=False)
+    dest_lon = Column(Float, nullable=False)
+    total_distance_km = Column(Float, nullable=False)
+    total_energy_kwh = Column(Float, nullable=False)
+    total_travel_time_minutes = Column(Float, nullable=True)
+    charging_stop_count = Column(Integer, nullable=False, default=0)
+    charging_stops_summary = Column(Text, nullable=True)
+    status = Column(String(50), nullable=False, default="COMPLETED")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="trip_histories")
+
+    def __repr__(self):
+        return f"<TripHistory(id={self.id}, origin='{self.origin_name}', dest='{self.dest_name}', distance={self.total_distance_km}km)>"
 
 
 class ChargingSession(Base):

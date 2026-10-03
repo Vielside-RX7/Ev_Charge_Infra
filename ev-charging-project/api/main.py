@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field, model_validator
 # Path Configuration & Models Import
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, _PROJECT_ROOT)
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "api"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "models"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "database"))
 
@@ -96,6 +98,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from user_routes import router as user_router  # noqa: E402
+app.include_router(user_router)
 
 
 # ---------------------------------------------------------------------------

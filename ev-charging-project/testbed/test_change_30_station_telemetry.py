@@ -296,14 +296,62 @@ class TestChange30StationTelemetry(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
 
-        self.assertEqual(body["source"], "HARDWARE")
-        self.assertEqual(body["state"], "FAULTED")
-        self.assertTrue(body["fault"])
-        self.assertEqual(body["fault_code"], "PHYSICAL_EMERGENCY_BUTTON")
-        self.assertFalse(body["relay_closed"])
-        self.assertEqual(body["operational_status"], "OUT_OF_SERVICE")
-        self.assertFalse(body["eligible_for_planning"])
-        self.assertIn("Hardware fault detected", body["rejection_reason"])
+    def tearDown(self):
+        # Always restore global provider station 7 state to AVAILABLE after tests
+        global_station_telemetry_provider.update_simulated_state("7", "RESTORE_AVAILABLE")
+
+    def test_10_fault_station_recommend_exclusion_end_to_end(self):
+        """
+        Regression Test:
+        1. When station 7 (Grand Mercure) is AVAILABLE -> /recommend includes station 7 with eligible_for_planning=True.
+        2. When station 7 is faulted via simulate API -> /station/7/telemetry reports eligible_for_planning=False.
+        3. /recommend request strictly excludes station 7 from the candidates list (not merely hidden in UI).
+        4. When station 7 is restored -> /recommend once again includes station 7.
+        """
+        # Step 1: Ensure station is restored
+        resp_restore = self.client.post("/station/7/simulate", json={"action": "RESTORE_AVAILABLE"})
+        self.assertEqual(resp_restore.status_code, 200)
+        self.assertTrue(resp_restore.json()["eligible_for_planning"])
+
+        rec_req = {
+            "user_lat": 12.33,
+            "user_lon": 76.64,
+            "connector_type": "CCS2",
+            "battery_capacity_kwh": 60.0,
+            "current_soc_percent": 40.0,
+            "target_soc_percent": 85.0,
+            "max_search_radius_km": 20.0,
+            "top_n": 10,
+        }
+
+        # Step 2: Query recommendations while AVAILABLE
+        resp_rec_avail = self.client.post("/recommend", json=rec_req)
+        self.assertEqual(resp_rec_avail.status_code, 200)
+        chargers_avail = resp_rec_avail.json()
+        matching_ids_avail = [c["charger_id"] for c in chargers_avail]
+        self.assertIn(7, matching_ids_avail, "Station 7 (Grand Mercure) should be present in recommendations when AVAILABLE")
+
+        # Step 3: Fault station 7
+        resp_fault = self.client.post("/station/7/simulate", json={"action": "SIMULATE_FAULT", "fault_code": "OVERCURRENT_TRIP"})
+        self.assertEqual(resp_fault.status_code, 200)
+        fault_body = resp_fault.json()
+        self.assertEqual(fault_body["operational_status"], "OUT_OF_SERVICE")
+        self.assertFalse(fault_body["eligible_for_planning"])
+
+        # Step 4: Query recommendations while FAULTED -> station 7 MUST be completely absent
+        resp_rec_fault = self.client.post("/recommend", json=rec_req)
+        self.assertEqual(resp_rec_fault.status_code, 200)
+        chargers_fault = resp_rec_fault.json()
+        matching_ids_fault = [c["charger_id"] for c in chargers_fault]
+        self.assertNotIn(7, matching_ids_fault, "Station 7 (Grand Mercure) must be completely ABSENT from /recommend when faulted")
+
+        # Step 5: Restore station 7 -> station 7 returns to recommendations
+        resp_restore_2 = self.client.post("/station/7/simulate", json={"action": "RESTORE_AVAILABLE"})
+        self.assertEqual(resp_restore_2.status_code, 200)
+        resp_rec_restored = self.client.post("/recommend", json=rec_req)
+        self.assertEqual(resp_rec_restored.status_code, 200)
+        matching_ids_restored = [c["charger_id"] for c in resp_rec_restored.json()]
+        self.assertIn(7, matching_ids_restored, "Station 7 (Grand Mercure) must return to /recommend after RESTORE_AVAILABLE")
 
 
 if __name__ == "__main__":

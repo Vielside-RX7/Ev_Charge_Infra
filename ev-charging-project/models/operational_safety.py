@@ -349,14 +349,45 @@ def compute_station_trust_score(
 
 
 # ---------------------------------------------------------------------------
-# Operational Eligibility Gate
+# Operational Eligibility Gate & Live Telemetry Overlay
 # ---------------------------------------------------------------------------
+
+_global_telemetry_provider: Any = None
+
+
+def set_global_telemetry_provider(provider: Any) -> None:
+    """Register the global station telemetry provider for authoritative live state overlay."""
+    global _global_telemetry_provider
+    _global_telemetry_provider = provider
+
+
+def get_global_telemetry_provider() -> Any:
+    """Retrieve the registered global station telemetry provider."""
+    return _global_telemetry_provider
+
+
+def normalize_station_id(station_id: Any) -> Optional[str]:
+    """Normalize station identity from numeric, float string, or string representation to clean string key."""
+    if station_id is None:
+        return None
+    s = str(station_id).strip()
+    if not s or s.lower() == "nan":
+        return None
+    try:
+        f = float(s)
+        if f.is_integer():
+            return str(int(f))
+    except (ValueError, TypeError):
+        pass
+    return s
+
 
 def check_operational_eligibility(
     charger_data: Dict[str, Any],
     policy: Optional[OperationalPolicy] = None,
     feedback_mgr: Optional[UserFeedbackManager] = None,
     as_of: Optional[datetime] = None,
+    telemetry_provider: Optional[Any] = None,
 ) -> OperationalEligibilityResult:
     """
     Authoritative Operational Eligibility Gate.
@@ -385,7 +416,44 @@ def check_operational_eligibility(
     if ref_time.tzinfo is None:
         ref_time = ref_time.replace(tzinfo=timezone.utc)
 
-    charger_id = charger_data.get("charger_id") or charger_data.get("id")
+    raw_id = charger_data.get("charger_id") or charger_data.get("id") or charger_data.get("station_id")
+    charger_id = normalize_station_id(raw_id)
+
+    # 0. Live Telemetry / Hardware Provider Overlay
+    # If an authoritative telemetry provider has a live record for this station,
+    # overlay its live state, active fault flag, and rejection reason.
+    effective_provider = telemetry_provider if telemetry_provider is not None else _global_telemetry_provider
+    live_telemetry_rec = None
+    if charger_id is not None and effective_provider is not None:
+        try:
+            get_live_fn = getattr(effective_provider, "get_live_telemetry_if_exists", None)
+            if callable(get_live_fn):
+                live_telemetry_rec = get_live_fn(charger_id)
+        except Exception as exc:
+            logger.debug("Live telemetry overlay lookup error for charger %s: %s", charger_id, exc)
+
+    if live_telemetry_rec is not None:
+        charger_data = dict(charger_data)
+        if live_telemetry_rec.fault or live_telemetry_rec.state in (
+            OperationalStatus.OUT_OF_SERVICE.value,
+            "FAULTED",
+            "FAULT",
+        ):
+            charger_data["operational_status"] = OperationalStatus.OUT_OF_SERVICE
+            charger_data["has_active_fault"] = True
+            charger_data["rejection_reason"] = (
+                f"Hardware fault detected ({live_telemetry_rec.fault_code or 'UNKNOWN_FAULT'}); safety lockout."
+            )
+            if hasattr(live_telemetry_rec, "timestamp_iso"):
+                charger_data["status_last_updated"] = live_telemetry_rec.timestamp_iso
+        elif live_telemetry_rec.state in (OperationalStatus.MAINTENANCE.value, "MAINTENANCE"):
+            charger_data["operational_status"] = OperationalStatus.MAINTENANCE
+            charger_data["under_maintenance"] = True
+            charger_data["rejection_reason"] = "Station is undergoing maintenance."
+            if hasattr(live_telemetry_rec, "timestamp_iso"):
+                charger_data["status_last_updated"] = live_telemetry_rec.timestamp_iso
+        elif hasattr(live_telemetry_rec, "timestamp_iso") and "status_last_updated" not in charger_data:
+            charger_data["status_last_updated"] = live_telemetry_rec.timestamp_iso
 
     # 1. Determine base operational status
     raw_status = charger_data.get("operational_status")
@@ -458,9 +526,8 @@ def check_operational_eligibility(
     # 5. Determine Freshness & Confidence
     ts_val = (
         charger_data.get("status_last_updated")
-        or charger_data.get("last_updated")
-        or charger_data.get("updated_at")
-        or charger_data.get("reported_at")
+        or charger_data.get("last_heartbeat")
+        or charger_data.get("telemetry_timestamp")
     )
     last_updated_dt = parse_datetime_safe(ts_val)
     age_hours: Optional[float] = None

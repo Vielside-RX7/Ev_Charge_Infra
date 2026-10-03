@@ -125,31 +125,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
           <div className="flex items-center gap-4 text-xs font-mono">
             {/* Live Source Badge */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700/50">
-              <span className="text-slate-400">HARDWARE STATE:</span>
-              <span
-                className={`font-semibold tracking-wider ${
-                  telemetry?.source === 'HARDWARE'
-                    ? 'text-amber-400'
-                    : 'text-indigo-400'
-                }`}
-              >
-                {telemetry?.source === 'HARDWARE' ? 'REAL (ESP32)' : 'SIMULATED'}
+              <span className="text-slate-400">HARDWARE ENGINE:</span>
+              <span className="font-semibold tracking-wider text-indigo-400">
+                SOFTWARE SIMULATOR
               </span>
             </div>
 
             {/* Electrical Telemetry Quality Badge */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700/50">
-              <span className="text-slate-400">ELECTRICAL:</span>
-              <span
-                className={`font-semibold tracking-wider ${
-                  telemetry?.telemetry_quality === 'MEASURED'
-                    ? 'text-emerald-400'
-                    : telemetry?.telemetry_quality === 'NOMINAL'
-                    ? 'text-amber-400'
-                    : 'text-indigo-400'
-                }`}
-              >
-                {telemetry?.telemetry_quality || 'SIMULATED'}
+              <span className="text-slate-400">ELECTRICAL SENSING:</span>
+              <span className="font-semibold tracking-wider text-amber-400">
+                SIMULATED / NOT CONNECTED
               </span>
             </div>
 
@@ -159,7 +145,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span>ONLINE</span>
+              <span>SIMULATOR ACTIVE</span>
             </div>
 
             {/* Auto Refresh Toggle */}
@@ -313,22 +299,12 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                   <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
                     Electrical Telemetry
                   </h2>
-                  {telemetry?.telemetry_quality === 'NOMINAL' ? (
-                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-medium">
-                      Nominal / Estimated
-                    </span>
-                  ) : telemetry?.telemetry_quality === 'MEASURED' ? (
-                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-medium">
-                      Measured · INA219 Live
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium">
-                      Simulated Stream
-                    </span>
-                  )}
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-medium">
+                    SIMULATED / NOT CONNECTED
+                  </span>
                 </div>
                 <span className="text-[11px] font-mono text-slate-400">
-                  {telemetry?.telemetry_quality === 'NOMINAL' ? 'Load Rating Baseline' : 'Bus Voltage & Shunt Current'}
+                  Calculated by Software Telemetry Model (No Physical Sensor Attached)
                 </span>
               </div>
 
@@ -337,7 +313,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 {/* Voltage */}
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
                   <span className="label-quiet">
-                    {telemetry?.telemetry_quality === 'NOMINAL' ? 'NOMINAL VOLTAGE' : 'BUS VOLTAGE'}
+                    SIMULATED VOLTAGE
                   </span>
                   <div className="text-2xl font-light font-mono text-white tabular-nums">
                     {telemetry?.voltage_v?.toFixed(1) || '0.0'}
@@ -354,7 +330,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 {/* Current */}
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
                   <span className="label-quiet">
-                    {telemetry?.telemetry_quality === 'NOMINAL' ? 'NOMINAL CURRENT' : 'CURRENT'}
+                    SIMULATED CURRENT
                   </span>
                   <div className="text-2xl font-light font-mono text-white tabular-nums">
                     {telemetry?.current_a?.toFixed(1) || '0.0'}
@@ -371,7 +347,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 {/* Active Power */}
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
                   <span className="label-quiet">
-                    {telemetry?.telemetry_quality === 'NOMINAL' ? 'NOMINAL POWER' : 'ACTIVE POWER'}
+                    ACTIVE POWER
                   </span>
                   <div className="text-2xl font-light font-mono text-white tabular-nums">
                     {telemetry?.power_kw ? telemetry.power_kw.toFixed(2) : ((telemetry?.power_w || 0) / 1000).toFixed(2)}
@@ -393,7 +369,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 {/* Energy Delivered */}
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
                   <span className="label-quiet">
-                    {telemetry?.telemetry_quality === 'NOMINAL' ? 'ESTIMATED ENERGY' : 'ENERGY DELIVERED'}
+                    ENERGY DELIVERED
                   </span>
                   <div className="text-2xl font-light font-mono text-white tabular-nums">
                     {telemetry?.energy_kwh
@@ -407,19 +383,16 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </div>
               </div>
 
-              {/* Hardware Quality Callout when in NOMINAL mode */}
-              {telemetry?.telemetry_quality === 'NOMINAL' && (
-                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs font-mono text-amber-200/90 flex items-start gap-2.5">
-                  <span className="text-base leading-none">ℹ️</span>
-                  <div className="space-y-0.5">
-                    <span className="font-semibold text-amber-300 block">Demonstration Mode (No Physical INA219 Current Sensor):</span>
-                    <p className="text-[11px] text-amber-200/80">
-                      Physical station state, MOSFET load actuation, and fault button are REAL from hardware.
-                      Electrical voltage/current metrics are NOMINAL estimates until physical sensor integration.
-                    </p>
-                  </div>
+              {/* Hardware Sensing Notice */}
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs font-mono text-amber-200/90 flex items-start gap-2.5">
+                <span className="text-base leading-none">ℹ️</span>
+                <div className="space-y-0.5">
+                  <span className="font-semibold text-amber-300 block">Current / Electrical Sensing: SIMULATED / NOT CONNECTED</span>
+                  <p className="text-[11px] text-amber-200/80">
+                    No physical electrical sensor is attached. Voltage, current, and energy metrics are calculated by the software telemetry model in sync with simulated state transitions.
+                  </p>
                 </div>
-              )}
+              </div>
 
               {/* Contactor Relay & Contactor State */}
               <div className="p-4 rounded-xl bg-slate-900/40 border border-white/5 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
@@ -430,7 +403,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                     }`}
                   />
                   <div>
-                    <span className="text-slate-400">LOAD ACTUATOR / MOSFET: </span>
+                    <span className="text-slate-400">SIMULATED MOSFET / LOAD ACTUATOR: </span>
                     <span
                       className={`font-semibold ${
                         telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-300'
@@ -442,7 +415,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </div>
 
                 <div className="text-slate-400">
-                  Hardware Bus Interface: <span className="text-slate-200">ESP32 GPIO / MOSFET</span>
+                  Actuator Control: <span className="text-slate-200">{telemetry?.relay_closed ? 'Gate Logic HIGH (3.3V)' : 'Gate Logic LOW (0.0V)'}</span>
                 </div>
               </div>
             </div>
@@ -486,13 +459,194 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             </div>
           </div>
 
-          {/* Charger Specifications & Hardware Diagnostics (5 Columns) */}
+          {/* Software Hardware Simulator Panel & Specifications (5 Columns) */}
           <div className="lg:col-span-5 space-y-6">
+            {/* SOFTWARE HARDWARE SIMULATOR PANEL */}
+            <div className="p-6 rounded-2xl bg-[#0a0f18] border border-teal-500/20 shadow-[0_0_25px_-5px_rgba(0,210,180,0.1)] space-y-5">
+              <div className="border-b border-white/10 pb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm uppercase tracking-wider font-mono text-white font-semibold flex items-center gap-2">
+                    <span className="inline-block h-2 w-2 rounded-full bg-teal-400 animate-pulse"></span>
+                    Software Hardware Simulator
+                  </h2>
+                  <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                    Virtual ESP32 Bench & LED Indicators (No Hardware Required)
+                  </p>
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-500/10 border border-teal-500/30 text-teal-300 font-semibold">
+                  LIVE BENCH
+                </span>
+              </div>
+
+              {/* 4 Virtual LEDs */}
+              <div className="space-y-2">
+                <span className="text-[11px] uppercase font-mono tracking-wider text-slate-400 block">
+                  Virtual Hardware Status LEDs
+                </span>
+                <div className="grid grid-cols-4 gap-2.5 p-3.5 rounded-xl bg-slate-950/70 border border-white/5">
+                  {/* GREEN LED = AVAILABLE */}
+                  <div className="flex flex-col items-center text-center space-y-1.5">
+                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
+                      <div
+                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                          isAvailable
+                            ? 'bg-emerald-400 border border-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.9)] scale-105'
+                            : 'bg-emerald-950/60 border border-emerald-900/40 opacity-40'
+                        }`}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isAvailable ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      GREEN
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
+                      AVAILABLE
+                    </span>
+                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isAvailable ? 'bg-emerald-500/20 text-emerald-300 font-semibold' : 'text-slate-600'}`}>
+                      {isAvailable ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* BLUE LED = CHARGING */}
+                  <div className="flex flex-col items-center text-center space-y-1.5">
+                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
+                      <div
+                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                          isCharging
+                            ? 'bg-sky-400 border border-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.95)] animate-pulse scale-105'
+                            : 'bg-sky-950/60 border border-sky-900/40 opacity-40'
+                        }`}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isCharging ? 'text-sky-400' : 'text-slate-500'}`}>
+                      BLUE
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
+                      CHARGING
+                    </span>
+                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isCharging ? 'bg-sky-500/20 text-sky-300 font-semibold' : 'text-slate-600'}`}>
+                      {isCharging ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* WHITE LED = COMPLETE */}
+                  <div className="flex flex-col items-center text-center space-y-1.5">
+                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
+                      <div
+                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                          isComplete
+                            ? 'bg-white border border-slate-200 shadow-[0_0_16px_rgba(255,255,255,0.95)] scale-105'
+                            : 'bg-slate-800/60 border border-slate-700/40 opacity-40'
+                        }`}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isComplete ? 'text-white' : 'text-slate-500'}`}>
+                      WHITE
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
+                      COMPLETE
+                    </span>
+                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isComplete ? 'bg-white/20 text-white font-semibold' : 'text-slate-600'}`}>
+                      {isComplete ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* RED LED = FAULT */}
+                  <div className="flex flex-col items-center text-center space-y-1.5">
+                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
+                      <div
+                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                          isFaulted
+                            ? 'bg-rose-500 border border-rose-300 shadow-[0_0_20px_rgba(244,63,94,1)] animate-bounce scale-105'
+                            : 'bg-rose-950/60 border border-rose-900/40 opacity-40'
+                        }`}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isFaulted ? 'text-rose-400' : 'text-slate-500'}`}>
+                      RED
+                    </span>
+                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
+                      FAULT
+                    </span>
+                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isFaulted ? 'bg-rose-500/20 text-rose-300 font-semibold' : 'text-slate-600'}`}>
+                      {isFaulted ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Prominent Physical Button Simulator */}
+              <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-rose-200 font-medium">
+                    Tactile Hardware Fault Button
+                  </span>
+                  <span className="text-[10px] font-mono text-rose-300/80">
+                    ESP32 E-Stop Equivalent
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isActionLoading || isFaulted}
+                  onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
+                  className={`w-full py-3.5 px-4 rounded-xl font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-lg ${
+                    isFaulted
+                      ? 'bg-slate-900/60 border border-slate-800 text-slate-500 cursor-not-allowed'
+                      : 'bg-gradient-to-b from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border border-rose-400/50 shadow-rose-900/40 hover:shadow-rose-600/30 active:scale-[0.97]'
+                  }`}
+                >
+                  <span className="inline-block h-3.5 w-3.5 rounded-full bg-rose-300 shadow-[0_0_8px_#ffffff]"></span>
+                  {isFaulted ? '🔴 FAULT LATCHED (BUTTON PRESSED)' : '🔴 PRESS HARDWARE FAULT BUTTON'}
+                </button>
+                <p className="text-[10px] font-mono text-slate-400 leading-relaxed text-center">
+                  Triggers the exact same FAULT state transition as the physical ESP32 button, instantly engaging safety lockout and tripping the RED LED.
+                </p>
+              </div>
+
+              {/* Simulated MOSFET / Load Actuator State Details */}
+              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-white/5 space-y-2 text-xs font-mono">
+                <div className="flex items-center justify-between text-[11px] border-b border-white/5 pb-2">
+                  <span className="text-slate-400">Simulated Actuator:</span>
+                  <span className="text-white font-semibold">MOSFET Power Stage</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="p-2 rounded bg-white/[0.02] border border-white/5">
+                    <span className="text-slate-500 block text-[10px]">GATE VOLTAGE</span>
+                    <span className={`font-semibold ${telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-400'}`}>
+                      {telemetry?.relay_closed ? '3.3V (HIGH)' : '0.0V (LOW)'}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded bg-white/[0.02] border border-white/5">
+                    <span className="text-slate-500 block text-[10px]">CHANNEL STATUS</span>
+                    <span className={`font-semibold ${telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-400'}`}>
+                      {telemetry?.relay_closed ? 'CONDUCTING' : 'ISOLATED'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Diagnostics Summary */}
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
+                  <span className="text-slate-500 block text-[10px]">CURRENT SENSOR</span>
+                  <span className="text-amber-400 font-semibold text-[11px]">
+                    SIMULATED / NOT CONNECTED
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
+                  <span className="text-slate-500 block text-[10px]">HARDWARE LINK</span>
+                  <span className="text-indigo-400 font-semibold text-[11px]">
+                    SOFTWARE EMULATION
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Charger Info Card */}
             <div className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-4">
               <div className="border-b border-white/5 pb-3">
                 <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
-                  Station Hardware Specifications
+                  Station Specifications
                 </h2>
               </div>
 
@@ -533,50 +687,6 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </div>
               </div>
             </div>
-
-            {/* Hardware Health & Sensor Diagnostics */}
-            <div className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-4">
-              <div className="border-b border-white/5 pb-3">
-                <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
-                  Hardware Health & Diagnostics
-                </h2>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="text-slate-400 text-[11px]">CONTROLLER (ESP32)</span>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        telemetry?.controller_connected ? 'bg-emerald-400' : 'bg-rose-400'
-                      }`}
-                    />
-                    <span className="text-slate-200">
-                      {telemetry?.controller_connected ? 'CONNECTED (REAL)' : 'DISCONNECTED'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="text-slate-400 text-[11px]">CURRENT SENSOR</span>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        telemetry?.telemetry_connected ? 'bg-emerald-400' : 'bg-amber-400'
-                      }`}
-                    />
-                    <span className="text-slate-200">
-                      {telemetry?.telemetry_connected ? 'INA219 ACTIVE' : 'NOMINAL MODE'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-[11px] text-slate-400 font-mono flex items-center justify-between pt-1">
-                <span>Heartbeat: {formatTime(telemetry?.last_heartbeat)}</span>
-                <span className="text-emerald-400">Link: Wi-Fi HTTP</span>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -589,11 +699,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 <span className="text-cockpit-teal font-mono font-medium text-xs uppercase px-2 py-0.5 rounded bg-teal-500/10 border border-teal-500/20">
                   DEV CONSOLE
                 </span>
-                Hardware State Machine & Telemetry Simulation Controls
+                State Machine & Simulation Action Controls
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Operates through the authoritative station provider abstraction. Injects simulated physical events
-                prior to ESP32 hardware attachment.
+                Authoritative software state machine transitions. All actions immediately update virtual LEDs, MOSFET load state, and safety gating.
               </p>
             </div>
 
@@ -606,7 +715,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 className="bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-teal-400"
               >
                 <option value="OVERCURRENT_TRIP">Overcurrent Trip (135A Limit)</option>
-                <option value="INA219_COMM_LOSS">INA219 I2C Comm Loss</option>
+                <option value="INA219_COMM_LOSS">Sensor Comm Loss (Simulated)</option>
                 <option value="RELAY_WELD_DETECTED">Relay Contact Weld Detected</option>
                 <option value="EMERGENCY_STOP_PRESSED">Emergency Stop Actuated</option>
                 <option value="UNDERVOLTAGE_LOCKOUT">Undervoltage Lockout (&lt;320V)</option>
@@ -686,7 +795,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
       {/* Industrial Footer */}
       <footer className="py-4 px-6 lg:px-12 border-t border-white/5 text-center label-quiet font-mono text-[11px]">
-        VoltGuide Infrastructure Node · Station ID #7 · INA219 Telemetry Interface · Authoritative Safety Gate (Change 27)
+        VoltGuide Infrastructure Node · Station ID #7 · Software Hardware Simulator · Simulated Electrical Sensing (No Physical Sensor Attached) · Authoritative Safety Gate (Change 27)
       </footer>
     </div>
   )

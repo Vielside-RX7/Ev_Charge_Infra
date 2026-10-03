@@ -440,6 +440,31 @@ class TestChange27OperationalSafety(unittest.TestCase):
         self.assertEqual(st_data["feedback_summary"]["recent_positive_reports"], 1)
         self.assertIn("Operational confidence based on latest available data", st_data["data_honesty_note"])
 
+    # --------------------------------------------------------------------------
+    # 16. OCM station with old DB updated_at is not rejected for fake staleness
+    # --------------------------------------------------------------------------
+    def test_16_ocm_station_with_old_updated_at_not_rejected_for_fake_staleness(self):
+        # Database row updated_at from months ago (e.g. 900+ hours old)
+        old_db_time = self.now - timedelta(days=60)
+        station_data = {
+            "charger_id": "OCM_KAR_101",
+            "name": "Urs Kar, Krishnamurthy Puram",
+            "operational_status": "AVAILABLE",
+            "updated_at": old_db_time.isoformat(),
+            "created_at": old_db_time.isoformat(),
+            "reliability": 0.92,
+            "charging_power_kw": 50.0,
+        }
+        res = check_operational_eligibility(station_data, as_of=self.now)
+        # Must be eligible and not falsely rejected due to DB updated_at timestamp
+        self.assertTrue(res.eligible)
+        self.assertEqual(res.operational_status, OperationalStatus.AVAILABLE)
+        self.assertIsNone(res.rejection_reason)
+        self.assertGreaterEqual(res.status_confidence, 0.40)
+        self.assertIsNone(res.status_age_hours)
+        self.assertIsNone(res.status_last_updated)
+
 
 if __name__ == "__main__":
     unittest.main()
+
